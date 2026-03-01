@@ -1,0 +1,18 @@
+# Godot 4 generated files
+godot/.godot/
+
+# Godot UID files (auto-generated, not needed in version control)
+godot/**/*.uid
+
+# macOS
+.DS_Store
+
+# API keys / secrets
+.env
+*.env.local
+api_key.txt
+
+# Game logs output (runtime-generated)
+godot/logs/
+
+*.txt
