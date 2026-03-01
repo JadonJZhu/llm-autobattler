@@ -1,7 +1,7 @@
 extends Node2D
 ## Root controller for the game scene.
-## Wires together GameBoard, TurnManager, and UI elements.
-## In Phase 1, the LLM turn is simulated with random moves for testing.
+## Wires together GameBoard, TurnManager, LlmClient, and UI elements.
+## Uses Claude API when an API key is available, otherwise falls back to random simulation.
 
 @onready var game_board: GameBoard = $GameBoard
 @onready var turn_manager: TurnManager = $TurnManager
@@ -20,6 +20,8 @@ func _connect_signals() -> void:
 	turn_manager.turn_changed.connect(_on_turn_changed)
 	turn_manager.game_won.connect(_on_game_won)
 	turn_manager.llm_turn_started.connect(_on_llm_turn_started)
+	LlmClient.llm_response_received.connect(_on_llm_response_received)
+	LlmClient.llm_request_failed.connect(_on_llm_request_failed)
 
 
 func _start_game() -> void:
@@ -45,8 +47,42 @@ func _on_game_won(final_score: int) -> void:
 
 
 func _on_llm_turn_started() -> void:
-	# Phase 1: simulate LLM with random moves for testing.
-	# Phase 2 will replace this with actual Claude API calls.
+	if LlmClient.has_api_key():
+		_update_status("LLM is thinking...")
+		LlmClient.request_llm_turn(game_board, turn_manager.turn_number, GameLogger.get_entries())
+	else:
+		_simulate_llm_turn()
+
+
+func _on_llm_response_received(flip_pos: Vector2i, lock_pos: Vector2i, thinking_text: String) -> void:
+	var flip_success: bool = turn_manager.apply_llm_flip(flip_pos)
+	if not flip_success:
+		push_warning("LLM flip failed at (%d, %d). Falling back to random." % [flip_pos.y, flip_pos.x])
+		_simulate_llm_turn()
+		return
+
+	var lock_success: bool = turn_manager.apply_llm_lock(lock_pos)
+	if not lock_success:
+		push_warning("LLM lock failed at (%d, %d)." % [lock_pos.y, lock_pos.x])
+
+	var score: int = game_board.get_correctness_score()
+	GameLogger.log_llm_turn(
+		turn_manager.turn_number, flip_pos, lock_pos, score,
+		thinking_text.left(2000)
+	)
+
+	var serialized: String = BoardSerializer.serialize(game_board)
+	print("Board state:\n" + serialized)
+	var lock_tile: Tile = game_board.get_tile(lock_pos)
+	var lock_action: String = "locked" if lock_tile.is_locked else "unlocked"
+	_update_status("LLM flipped (%d,%d), %s (%d,%d). Score: %d. Your turn!" % [
+		flip_pos.y, flip_pos.x, lock_action, lock_pos.y, lock_pos.x, score
+	])
+
+
+func _on_llm_request_failed(error_message: String) -> void:
+	push_error("LLM request failed: " + error_message)
+	_update_status("LLM error. Using random move.")
 	_simulate_llm_turn()
 
 

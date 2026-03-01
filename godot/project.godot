@@ -22,6 +22,7 @@ config/features=PackedStringArray("4.6")
 
 Logger="*res://scripts/game_logger.gd"
 GameLogger="*res://scripts/game_logger.gd"
+LlmClient="*res://scripts/llm_client.gd"
 
 [display]
 
