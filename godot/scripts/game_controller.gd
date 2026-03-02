@@ -70,9 +70,6 @@ func _start_game() -> void:
 	_refresh_shop_ui()
 	shop_ui.update_status("Game started! LLM places first.")
 
-	# LLM goes first — trigger immediately
-	_trigger_llm_turn()
-
 
 func _on_shop_button_pressed(type: UnitData.UnitType) -> void:
 	turn_manager.select_unit_for_placement(type)
