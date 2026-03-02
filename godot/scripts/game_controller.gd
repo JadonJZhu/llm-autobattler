@@ -169,7 +169,7 @@ func _on_game_over(winner, score_data: Dictionary) -> void:
 	var llm_escaped: int = int(score_data.get("llm_escaped", 0))
 	var human_escaped: int = int(score_data.get("human_escaped", 0))
 	shop_ui.update_status(
-		"Game Over! %s LLM: %d pts (%d remaining + %d escaped) — Human: %d pts (%d remaining + %d escaped). Click anywhere to restart." % [
+		"%s LLM: %d pts (%d remaining + %d escaped) — Human: %d pts (%d remaining + %d escaped). Click anywhere to restart." % [
 			winner_text,
 			llm_score, llm_remaining, llm_escaped,
 			human_score, human_remaining, human_escaped,

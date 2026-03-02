@@ -156,18 +156,11 @@ func _format_game_replay(replay: Dictionary) -> String:
 	var outcome: String = replay.get("outcome", "")
 	var llm_score: int = int(replay.get("llm_score", -1))
 	var human_score: int = int(replay.get("human_score", -1))
-	var llm_remaining: int = int(replay.get("llm_remaining", -1))
-	var human_remaining: int = int(replay.get("human_remaining", -1))
-	var llm_escaped: int = int(replay.get("llm_escaped", -1))
-	var human_escaped: int = int(replay.get("human_escaped", -1))
 	if not outcome.is_empty():
 		parts.append("Outcome: %s wins" % outcome if outcome != "Tie" else "Outcome: Tie")
 	if llm_score >= 0 and human_score >= 0:
 		parts.append(
-			"Final score: LLM %d (%d remaining + %d escaped) vs Human %d (%d remaining + %d escaped)" % [
-				llm_score, max(llm_remaining, 0), max(llm_escaped, 0),
-				human_score, max(human_remaining, 0), max(human_escaped, 0),
-			]
+			"Final score: LLM %d vs Human %d" % [llm_score, human_score]
 		)
 
 	return "\n".join(parts)
