@@ -246,11 +246,6 @@ func test_d_tiebreak_left_to_right():
 
 
 func test_d_tiebreak_top_to_bottom():
-	var snap := _make_snapshot([
-		{ "pos": Vector2i(1, 1), "type": UnitData.UnitType.D, "owner": UnitData.Owner.LLM },
-		{ "pos": Vector2i(2, 1), "type": UnitData.UnitType.A, "owner": UnitData.Owner.HUMAN },
-		{ "pos": Vector2i(3, 1), "type": UnitData.UnitType.B, "owner": UnitData.Owner.HUMAN },
-	])
 	# (2,1) has manhattan dist 1, (3,1) has dist 2 — not a tie. Use equal distances:
 	# Actually let's use enemies at same distance and same column
 	# D at (1,1): enemy at (0,1) dist=1 and (2,1) dist=1 — but (0,1) would be friendly row
@@ -258,13 +253,13 @@ func test_d_tiebreak_top_to_bottom():
 	# Wait, (3,0): dist = |3-2|+|0-1| = 2, (0,1): dist = |0-2|+|1-1| = 2
 	# Tie-break: smaller col first → (0,1) col=1 vs (3,0) col=0 → (3,0) wins
 	# This tests left-to-right. For top-to-bottom with same col:
-	var snap2 := _make_snapshot([
+	var snap := _make_snapshot([
 		{ "pos": Vector2i(1, 1), "type": UnitData.UnitType.D, "owner": UnitData.Owner.LLM },
 		{ "pos": Vector2i(0, 0), "type": UnitData.UnitType.A, "owner": UnitData.Owner.HUMAN },
 		{ "pos": Vector2i(2, 0), "type": UnitData.UnitType.A, "owner": UnitData.Owner.HUMAN },
 	])
 	# (0,0): dist = 1+1 = 2, (2,0): dist = 1+1 = 2. Same col (0). Tie-break: smaller row → (0,0)
-	var result2 := engine.execute_step(snap2, UnitData.Owner.LLM)
+	var result2 := engine.execute_step(snap, UnitData.Owner.LLM)
 	assert_eq(result2["removal"], Vector2i(0, 0), "Same col tie-break should pick top-most (smaller row)")
 
 
