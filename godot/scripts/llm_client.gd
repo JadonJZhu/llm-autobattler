@@ -1,8 +1,8 @@
 extends Node
 ## Autoload singleton that communicates with the Claude Opus 4.6 API.
-## Builds prompts from game state, sends HTTP requests, and parses coordinate responses.
+## Builds prompts for the autochess prep phase and parses PLACE responses.
 
-signal llm_response_received(flip_pos: Vector2i, lock_pos: Vector2i, thinking_text: String)
+signal llm_prep_response_received(unit_type: Unit.UnitType, grid_pos: Vector2i)
 signal llm_request_failed(error_message: String)
 
 const API_ENDPOINT: String = "https://api.anthropic.com/v1/messages"
@@ -11,7 +11,9 @@ const ANTHROPIC_VERSION: String = "2023-06-01"
 const API_KEY_FILE_PATH: String = "res://api_key.txt"
 const REQUEST_TIMEOUT_SECONDS: float = 120.0
 const MAX_TOKENS: int = 4096
-const GRID_SIZE: int = 6
+
+const ROWS: int = 4
+const COLS: int = 3
 
 var _api_key: String = ""
 var _http_request: HTTPRequest
@@ -30,7 +32,8 @@ func has_api_key() -> bool:
 	return not _api_key.is_empty()
 
 
-func request_llm_turn(board: GameBoard, turn_number: int, log_entries: Array[Dictionary]) -> void:
+func request_llm_prep(board: GameBoard, llm_shop: Shop, turn_number: int,
+		log_entries: Array[Dictionary]) -> void:
 	if _is_requesting:
 		push_warning("LlmClient: Request already in progress.")
 		return
@@ -40,7 +43,7 @@ func request_llm_turn(board: GameBoard, turn_number: int, log_entries: Array[Dic
 
 	_is_requesting = true
 	var system_prompt: String = _build_system_prompt()
-	var user_message: String = _build_user_message(board, turn_number, log_entries)
+	var user_message: String = _build_user_message(board, llm_shop, turn_number, log_entries)
 	var request_body: Dictionary = _build_request_body(system_prompt, user_message)
 
 	var headers: PackedStringArray = PackedStringArray([
@@ -68,90 +71,84 @@ func _load_api_key() -> void:
 
 
 func _build_system_prompt() -> String:
-	return "You are playing a 6x6 grid puzzle game. Your goal is to maximize a correctness score by flipping arrow tiles.
+	return "You are playing a 4x3 autochess game. The board has 4 rows and 3 columns.
+You control the top 2 rows (rows 0-1). Your opponent (Human) controls the bottom 2 rows (rows 2-3).
 
-BOARD ELEMENTS:
-- Arrow tiles show a direction: ^ (up), v (down), < (left), > (right)
-- Arrows with \"L\" suffix are locked (e.g., \">L\")
-- \"X\" and \"Y\" are fixed destination markers
-- \".\" is an empty cell
+GAME PHASES:
+1. PREPARATION: You and the human alternate placing units. You place first each round.
+2. BATTLE: Units fight automatically (you don't control this phase).
 
-YOUR TURN:
-Each turn you must make exactly two moves:
-1. FLIP: Choose one unlocked arrow tile to flip. Flipping reverses the arrow on its axis (^ becomes v, < becomes >).
-2. LOCK: Choose one arrow tile (different from the flip target) to toggle its lock state. Locking a tile prevents the human from flipping it. Unlocking a previously locked tile frees it.
+UNIT TYPES AND COSTS:
+- A (1 gold): Attacks the cell directly ahead. If enemy there, removes it. Otherwise advances forward one cell.
+- B (1 gold): Attacks diagonally left-ahead. If on leftmost column (col 0), cannot attack. Otherwise advances forward.
+- C (1 gold): Attacks diagonally right-ahead. If on rightmost column (col 2), cannot attack. Otherwise advances forward.
+- D (2 gold): Ranged unit. Removes the closest enemy by Manhattan distance (ties broken left-to-right, then top-to-bottom).
 
-RULES:
-- You receive a correctness score after each turn (higher is better).
-- The human opponent gets one flip after your turn (on any unlocked arrow).
-- Locked tiles cannot be flipped by the human but can be unlocked by you on a future turn.
-- Your goal: reach the maximum correctness score.
+BATTLE MECHANICS:
+- Your units face DOWN (toward higher rows). Human units face UP (toward lower rows).
+- Turn order: A units act first, then B, then C, then D. Within same type, earlier-placed units go first.
+- Units that advance past the opponent's edge are removed from the board.
+- Battle alternates: you go first, then human, repeat until one side has no units (that side loses) or neither can act (tie).
 
 STRATEGY TIPS:
-- Track how your score changes after each move to infer which flips help.
-- Use locks strategically to protect tiles you believe are in their correct orientation.
-- The human will try to undo your progress.
+- A units are strong direct attackers but predictable.
+- B and C units can attack diagonally, useful for flanking.
+- D units are expensive (2 gold) but can snipe the most threatening enemy anywhere on the board.
+- Consider what the human might place and position your units to counter.
+
+YOUR SHOP shows which unit types you can buy and your remaining gold.
 
 RESPONSE FORMAT:
-Think through your reasoning freely, then end your response with exactly these two lines:
-FLIP: (row, col)
-LOCK: (row, col)
+Think through your reasoning, then end your response with exactly this line:
+PLACE: <type> (row, col)
 
-Where row and col are zero-indexed integers matching the grid coordinates shown. The FLIP and LOCK lines must be the last two non-empty lines of your response."
+Where <type> is A, B, C, or D, and row is 0 or 1 (your rows), col is 0, 1, or 2.
+The PLACE line must be the last non-empty line of your response."
 
 
-func _build_user_message(board: GameBoard, turn_number: int, log_entries: Array[Dictionary]) -> String:
+func _build_user_message(board: GameBoard, llm_shop: Shop, turn_number: int,
+		log_entries: Array[Dictionary]) -> String:
 	var parts: PackedStringArray = PackedStringArray()
 
-	parts.append("=== TURN %d ===" % turn_number)
+	parts.append("=== PREP TURN %d ===" % turn_number)
 	parts.append("")
 	parts.append("Current board state:")
 	parts.append(BoardSerializer.serialize(board))
 	parts.append("")
-
-	var score: int = board.get_correctness_score()
-	var max_score: int = board.get_max_correctness_score()
-	parts.append("Correctness score: %d / %d" % [score, max_score])
+	parts.append("Your shop: %s" % llm_shop.get_purchase_summary())
 	parts.append("")
 
 	if not log_entries.is_empty():
-		parts.append("Turn history:")
-		for entry: Dictionary in log_entries:
+		parts.append("Placement history:")
+		var recent_entries: Array[Dictionary] = log_entries.slice(
+			maxi(0, log_entries.size() - 10), log_entries.size()
+		)
+		for entry: Dictionary in recent_entries:
 			parts.append(_format_log_entry(entry))
 		parts.append("")
 
-	parts.append("Choose your FLIP and LOCK targets.")
+	parts.append("Choose a unit to place on your side of the board (rows 0-1).")
 
 	return "\n".join(parts)
 
 
 func _format_log_entry(entry: Dictionary) -> String:
-	var actor: String = entry.get("actor", "unknown")
-	var turn_num: int = entry.get("turn_number", 0)
-	var score_val: int = entry.get("correctness_score", 0)
-
-	if actor == "llm":
-		var flip: Dictionary = entry.get("flip_position", {})
-		var lock: Dictionary = entry.get("lock_position", {})
-		return "  Turn %d (LLM): flipped (%d,%d), locked (%d,%d), score=%d" % [
-			turn_num, flip.get("y", 0), flip.get("x", 0),
-			lock.get("y", 0), lock.get("x", 0), score_val
+	var phase: String = entry.get("phase", "")
+	if phase == "prep":
+		var actor: String = entry.get("actor", "unknown")
+		var unit_type: String = entry.get("unit_type", "?")
+		var pos: Dictionary = entry.get("position", {})
+		var gold: int = entry.get("gold_remaining", 0)
+		return "  %s placed %s at (%d, %d) | Gold: %d" % [
+			actor.capitalize(), unit_type, pos.get("row", 0), pos.get("col", 0), gold
 		]
-	elif actor == "human":
-		var flip: Dictionary = entry.get("flip_position", {})
-		return "  Turn %d (Human): flipped (%d,%d), score=%d" % [
-			turn_num, flip.get("y", 0), flip.get("x", 0), score_val
-		]
-	return "  Turn %d: %s" % [turn_num, str(entry)]
+	return "  %s" % str(entry)
 
 
 func _build_request_body(system_prompt: String, user_message: String) -> Dictionary:
 	return {
 		"model": API_MODEL,
 		"max_tokens": MAX_TOKENS,
-		"thinking": {
-			"type": "adaptive",
-		},
 		"system": system_prompt,
 		"messages": [
 			{
@@ -187,75 +184,85 @@ func _on_request_completed(result: int, response_code: int, _headers: PackedStri
 
 func _process_api_response(response: Dictionary) -> void:
 	var content_blocks: Array = response.get("content", [])
-	var thinking_text: String = ""
 	var response_text: String = ""
 
 	for block in content_blocks:
 		var block_dict: Dictionary = block as Dictionary
 		var block_type: String = block_dict.get("type", "")
-		if block_type == "thinking":
-			thinking_text += block_dict.get("thinking", "") + "\n"
-		elif block_type == "text":
+		if block_type == "text":
 			response_text += block_dict.get("text", "")
 
-	print("LlmClient: Thinking content:\n" + thinking_text)
 	print("LlmClient: Response text:\n" + response_text)
 
-	var parse_result: Dictionary = _parse_coordinates(response_text)
+	var parse_result: Dictionary = _parse_place_command(response_text)
 	if parse_result.is_empty():
-		llm_request_failed.emit("Failed to parse FLIP/LOCK coordinates from LLM response.")
+		llm_request_failed.emit("Failed to parse PLACE command from LLM response.")
 		return
 
-	var flip_pos: Vector2i = parse_result["flip"]
-	var lock_pos: Vector2i = parse_result["lock"]
-
-	llm_response_received.emit(flip_pos, lock_pos, thinking_text)
+	llm_prep_response_received.emit(parse_result["unit_type"], parse_result["position"])
 
 
-func _parse_coordinates(text: String) -> Dictionary:
-	var flip_pos: Vector2i = _extract_tagged_coordinate(text, "FLIP")
-	var lock_pos: Vector2i = _extract_tagged_coordinate(text, "LOCK")
-
-	if flip_pos == Vector2i(-1, -1) or lock_pos == Vector2i(-1, -1):
-		push_error("LlmClient: Could not parse coordinates. FLIP=%s LOCK=%s" % [str(flip_pos), str(lock_pos)])
-		return {}
-
-	if flip_pos == lock_pos:
-		push_error("LlmClient: FLIP and LOCK positions are the same: %s" % str(flip_pos))
-		return {}
-
-	return {"flip": flip_pos, "lock": lock_pos}
-
-
-func _extract_tagged_coordinate(text: String, tag: String) -> Vector2i:
-	# Search for the LAST occurrence of the tag to handle cases where
-	# the LLM mentions coordinates earlier in its reasoning.
-	var search_pattern: String = tag + ":"
+func _parse_place_command(text: String) -> Dictionary:
+	# Search for the LAST occurrence of PLACE: to handle LLM mentioning it in reasoning
+	var search_pattern: String = "PLACE:"
 	var last_index: int = text.rfind(search_pattern)
 	if last_index == -1:
-		return Vector2i(-1, -1)
+		push_error("LlmClient: No PLACE: command found in response.")
+		return {}
 
-	var after_tag: String = text.substr(last_index + search_pattern.length())
-	var open_paren: int = after_tag.find("(")
-	var close_paren: int = after_tag.find(")")
-	if open_paren == -1 or close_paren == -1 or close_paren <= open_paren:
-		return Vector2i(-1, -1)
+	var after_tag: String = text.substr(last_index + search_pattern.length()).strip_edges()
 
-	var coord_text: String = after_tag.substr(open_paren + 1, close_paren - open_paren - 1)
+	# Expected format: <type> (row, col)
+	# Extract the type letter (first non-space character)
+	var type_str: String = ""
+	var paren_start: int = -1
+	for i in range(after_tag.length()):
+		var character: String = after_tag[i]
+		if character == "(":
+			paren_start = i
+			break
+		if character != " ":
+			type_str += character
+
+	type_str = type_str.strip_edges().to_upper()
+	if type_str not in ["A", "B", "C", "D"]:
+		push_error("LlmClient: Invalid unit type in PLACE command: '%s'" % type_str)
+		return {}
+
+	if paren_start == -1:
+		push_error("LlmClient: No coordinates found in PLACE command.")
+		return {}
+
+	var paren_end: int = after_tag.find(")", paren_start)
+	if paren_end == -1:
+		push_error("LlmClient: Missing closing paren in PLACE command.")
+		return {}
+
+	var coord_text: String = after_tag.substr(paren_start + 1, paren_end - paren_start - 1)
 	var parts: PackedStringArray = coord_text.split(",")
 	if parts.size() != 2:
-		return Vector2i(-1, -1)
+		push_error("LlmClient: Expected 2 coordinates, got %d." % parts.size())
+		return {}
 
 	var row_str: String = parts[0].strip_edges()
 	var col_str: String = parts[1].strip_edges()
 	if not row_str.is_valid_int() or not col_str.is_valid_int():
-		return Vector2i(-1, -1)
+		push_error("LlmClient: Non-integer coordinates: '%s', '%s'" % [row_str, col_str])
+		return {}
 
 	var row: int = row_str.to_int()
 	var col: int = col_str.to_int()
 
-	if row < 0 or row >= GRID_SIZE or col < 0 or col >= GRID_SIZE:
-		return Vector2i(-1, -1)
+	# Validate LLM-side rows (0-1) and columns (0-2)
+	if row < 0 or row > 1:
+		push_error("LlmClient: Row %d is not on LLM side (must be 0 or 1)." % row)
+		return {}
+	if col < 0 or col >= COLS:
+		push_error("LlmClient: Column %d is out of range (must be 0-%d)." % [col, COLS - 1])
+		return {}
 
-	# Convert from (row, col) to Vector2i(col, row) to match internal representation
-	return Vector2i(col, row)
+	var unit_type: Unit.UnitType = Unit.type_from_string(type_str)
+	return {
+		"unit_type": unit_type,
+		"position": Vector2i(row, col),
+	}

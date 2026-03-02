@@ -1,140 +1,185 @@
 extends Node2D
-## Root controller for the game scene.
-## Wires together GameBoard, TurnManager, LlmClient, and UI elements.
-## Uses Claude API when an API key is available, otherwise falls back to random simulation.
+## Root controller for the autochess game scene.
+## Wires together GameBoard, BoardUI, TurnManager, LlmClient, and ShopUI.
+
+# --- Scene references ---
 
 @onready var game_board: GameBoard = $GameBoard
 @onready var turn_manager: TurnManager = $TurnManager
-@onready var score_label: Label = $UI/ScoreLabel
-@onready var turn_label: Label = $UI/TurnLabel
-@onready var status_label: Label = $UI/StatusLabel
+@onready var board_ui: BoardUI = $GameBoard/BoardUI
+@onready var shop_ui: ShopUI = $UI/ShopUI
+
+# --- State ---
+
+var _llm_shop: Shop
+var _human_shop: Shop
+var _game_is_over: bool = false
+var _instructions_menu: InstructionsMenu
 
 
 func _ready() -> void:
 	_connect_signals()
+	_setup_instructions_menu()
 	_start_game()
 
 
 func _connect_signals() -> void:
-	turn_manager.score_updated.connect(_on_score_updated)
-	turn_manager.turn_changed.connect(_on_turn_changed)
-	turn_manager.game_won.connect(_on_game_won)
-	turn_manager.llm_turn_started.connect(_on_llm_turn_started)
-	LlmClient.llm_response_received.connect(_on_llm_response_received)
+	turn_manager.phase_changed.connect(_on_phase_changed)
+	turn_manager.prep_turn_changed.connect(_on_prep_turn_changed)
+	turn_manager.battle_step_completed.connect(_on_battle_step_completed)
+	turn_manager.game_over.connect(_on_game_over)
+	turn_manager.status_updated.connect(_on_status_updated)
+	LlmClient.llm_prep_response_received.connect(_on_llm_prep_response_received)
 	LlmClient.llm_request_failed.connect(_on_llm_request_failed)
+	shop_ui.shop_button_pressed.connect(_on_shop_button_pressed)
 
+
+# --- Game Flow ---
 
 func _start_game() -> void:
-	var board_data: Dictionary = GameBoard.create_simple_board_data()
-	game_board.initialize_board(board_data)
-	turn_manager.initialize(game_board)
-	_update_status("Game started. LLM turn first.")
-	turn_manager.start_llm_turn()
+	_game_is_over = false
+	_llm_shop = Shop.create_randomized()
+	_human_shop = Shop.create_randomized()
+
+	game_board.initialize()
+	board_ui.clear()
+	board_ui.initialize()
+	turn_manager.initialize(game_board, _llm_shop, _human_shop)
+
+	shop_ui.setup(_llm_shop, _human_shop)
+	shop_ui.update_gold_labels(_llm_shop, _human_shop)
+	shop_ui.update_turn_label(turn_manager.get_current_phase_label())
+	shop_ui.update_status("Game started! LLM places first.")
+
+	# LLM goes first — trigger immediately
+	_trigger_llm_turn()
 
 
-func _on_score_updated(score: int, max_score: int) -> void:
-	score_label.text = "Score: %d / %d" % [score, max_score]
+func _on_shop_button_pressed(type: Unit.UnitType) -> void:
+	turn_manager.select_unit_for_placement(type)
 
 
-func _on_turn_changed(current_turn: TurnManager.TurnPhase) -> void:
-	turn_label.text = turn_manager.get_current_turn_label()
-
-
-func _on_game_won(final_score: int) -> void:
-	_update_status("LLM wins! Final score: %d" % final_score)
-	GameLogger.log_game_result("llm", final_score, turn_manager.turn_number)
-	GameLogger.save_log()
-
-
-func _on_llm_turn_started() -> void:
-	if LlmClient.has_api_key():
-		_update_status("LLM is thinking...")
-		LlmClient.request_llm_turn(game_board, turn_manager.turn_number, GameLogger.get_entries())
-	else:
-		_simulate_llm_turn()
-
-
-func _on_llm_response_received(flip_pos: Vector2i, lock_pos: Vector2i, thinking_text: String) -> void:
-	var flip_success: bool = turn_manager.apply_llm_flip(flip_pos)
-	if not flip_success:
-		push_warning("LLM flip failed at (%d, %d). Falling back to random." % [flip_pos.y, flip_pos.x])
-		_simulate_llm_turn()
-		return
-
-	var lock_success: bool = turn_manager.apply_llm_lock(lock_pos)
-	if not lock_success:
-		push_warning("LLM lock failed at (%d, %d)." % [lock_pos.y, lock_pos.x])
-
-	var score: int = game_board.get_correctness_score()
-	GameLogger.log_llm_turn(
-		turn_manager.turn_number, flip_pos, lock_pos, score,
-		thinking_text.left(2000)
+func _on_prep_turn_changed(turn: TurnManager.PrepTurn) -> void:
+	shop_ui.update_turn_label(turn_manager.get_current_phase_label())
+	shop_ui.update_gold_labels(_llm_shop, _human_shop)
+	var is_human_prep: bool = (
+		turn_manager.phase == TurnManager.GamePhase.PREP
+		and turn_manager.prep_turn == TurnManager.PrepTurn.HUMAN
 	)
+	shop_ui.update_human_shop_buttons(is_human_prep, _human_shop)
 
-	var serialized: String = BoardSerializer.serialize(game_board)
-	print("Board state:\n" + serialized)
-	var lock_tile: Tile = game_board.get_tile(lock_pos)
-	var lock_action: String = "locked" if lock_tile.is_locked else "unlocked"
-	_update_status("LLM flipped (%d,%d), %s (%d,%d). Score: %d. Your turn!" % [
-		flip_pos.y, flip_pos.x, lock_action, lock_pos.y, lock_pos.x, score
-	])
+	if turn == TurnManager.PrepTurn.LLM:
+		_trigger_llm_turn()
+
+
+func _trigger_llm_turn() -> void:
+	if LlmClient.has_api_key():
+		shop_ui.update_status("LLM is thinking...")
+		LlmClient.request_llm_prep(
+			game_board, _llm_shop,
+			turn_manager.turn_number, GameLogger.get_entries()
+		)
+	else:
+		_simulate_llm_prep()
+
+
+func _on_llm_prep_response_received(unit_type: Unit.UnitType, grid_pos: Vector2i) -> void:
+	var success: bool = turn_manager.apply_llm_prep_placement(unit_type, grid_pos)
+	if not success:
+		push_warning("LLM placement failed for %s at %s. Falling back to random." % [
+			Unit.TYPE_LABELS[unit_type], str(grid_pos)
+		])
+		_simulate_llm_prep()
+		return
+	shop_ui.update_gold_labels(_llm_shop, _human_shop)
+	var is_human_prep: bool = (
+		turn_manager.phase == TurnManager.GamePhase.PREP
+		and turn_manager.prep_turn == TurnManager.PrepTurn.HUMAN
+	)
+	shop_ui.update_human_shop_buttons(is_human_prep, _human_shop)
 
 
 func _on_llm_request_failed(error_message: String) -> void:
 	push_error("LLM request failed: " + error_message)
-	_update_status("LLM error. Using random move.")
-	_simulate_llm_turn()
+	shop_ui.update_status("LLM error. Using random placement.")
+	_simulate_llm_prep()
 
 
-func _simulate_llm_turn() -> void:
-	var flip_pos: Vector2i = _pick_random_arrow_position()
-	var lock_pos: Vector2i = _pick_random_arrow_position_for_lock(flip_pos)
+func _simulate_llm_prep() -> void:
+	# Pick a random affordable type from LLM shop
+	var affordable_types: Array[Unit.UnitType] = []
+	for type in _llm_shop.available_types:
+		if _llm_shop.can_afford(type):
+			affordable_types.append(type)
 
-	var flip_success: bool = turn_manager.apply_llm_flip(flip_pos)
-	if not flip_success:
-		_update_status("LLM flip failed at (%d, %d)" % [flip_pos.x, flip_pos.y])
+	if affordable_types.is_empty():
+		push_warning("LLM has no affordable units. Skipping.")
 		return
 
-	var lock_success: bool = turn_manager.apply_llm_lock(lock_pos)
-	if not lock_success:
-		_update_status("LLM lock toggle failed at (%d, %d)" % [lock_pos.x, lock_pos.y])
+	var chosen_type: Unit.UnitType = affordable_types[randi() % affordable_types.size()]
+
+	# Pick a random empty LLM cell
+	var empty_positions: Array[Vector2i] = game_board.get_empty_positions_for(Unit.Owner.LLM)
+	if empty_positions.is_empty():
+		push_warning("No empty LLM positions. Skipping.")
 		return
 
-	var score: int = game_board.get_correctness_score()
-	GameLogger.log_llm_turn(
-		turn_manager.turn_number, flip_pos, lock_pos, score, "random simulation"
+	var chosen_pos: Vector2i = empty_positions[randi() % empty_positions.size()]
+	var success: bool = turn_manager.apply_llm_prep_placement(chosen_type, chosen_pos)
+	if not success:
+		push_warning("Random LLM placement failed.")
+	shop_ui.update_gold_labels(_llm_shop, _human_shop)
+	var is_human_prep: bool = (
+		turn_manager.phase == TurnManager.GamePhase.PREP
+		and turn_manager.prep_turn == TurnManager.PrepTurn.HUMAN
 	)
-
-	var serialized: String = BoardSerializer.serialize(game_board)
-	print("Board state:\n" + serialized)
-	var lock_tile: Tile = game_board.get_tile(lock_pos)
-	var lock_action: String = "locked" if lock_tile.is_locked else "unlocked"
-	_update_status("LLM flipped (%d,%d), %s (%d,%d). Your turn!" % [
-		flip_pos.x, flip_pos.y, lock_action, lock_pos.x, lock_pos.y
-	])
+	shop_ui.update_human_shop_buttons(is_human_prep, _human_shop)
 
 
-func _pick_random_arrow_position() -> Vector2i:
-	var arrow_positions: Array[Vector2i] = []
-	for pos: Vector2i in game_board.tiles:
-		var tile: Tile = game_board.tiles[pos]
-		if tile.tile_type == Tile.TileType.ARROW and not tile.is_locked:
-			arrow_positions.append(pos)
-	if arrow_positions.is_empty():
-		return Vector2i(-1, -1)
-	return arrow_positions[randi() % arrow_positions.size()]
+func _on_phase_changed(new_phase: TurnManager.GamePhase) -> void:
+	shop_ui.update_turn_label(turn_manager.get_current_phase_label())
+	if new_phase == TurnManager.GamePhase.BATTLE or new_phase == TurnManager.GamePhase.GAME_OVER:
+		shop_ui.disable_all_shop_buttons()
 
 
-func _pick_random_arrow_position_for_lock(exclude: Vector2i) -> Vector2i:
-	var arrow_positions: Array[Vector2i] = []
-	for pos: Vector2i in game_board.tiles:
-		var tile: Tile = game_board.tiles[pos]
-		if tile.tile_type == Tile.TileType.ARROW and pos != exclude:
-			arrow_positions.append(pos)
-	if arrow_positions.is_empty():
-		return Vector2i(-1, -1)
-	return arrow_positions[randi() % arrow_positions.size()]
+func _on_battle_step_completed(step_result: Dictionary) -> void:
+	var event_text: String = step_result.get("event", "")
+	shop_ui.update_status("Battle: %s" % event_text)
+	shop_ui.update_turn_label(turn_manager.get_current_phase_label())
 
 
-func _update_status(text: String) -> void:
-	status_label.text = text
+func _on_game_over(winner) -> void:
+	_game_is_over = true
+	var winner_text: String
+	if winner == null:
+		winner_text = "It's a tie!"
+	elif winner == Unit.Owner.LLM:
+		winner_text = "LLM wins!"
+	else:
+		winner_text = "Human wins!"
+	shop_ui.update_status("Game Over! %s Click anywhere to restart." % winner_text)
+
+
+func _on_status_updated(message: String) -> void:
+	shop_ui.update_status(message)
+	shop_ui.update_gold_labels(_llm_shop, _human_shop)
+
+
+func _setup_instructions_menu() -> void:
+	_instructions_menu = InstructionsMenu.new()
+	$UI.add_child(_instructions_menu)
+
+
+func _unhandled_input(event: InputEvent) -> void:
+	if _instructions_menu.is_open():
+		return
+	if not _game_is_over:
+		return
+	if event is InputEventMouseButton and event.pressed:
+		_restart_game()
+	elif event is InputEventKey and event.pressed:
+		_restart_game()
+
+
+func _restart_game() -> void:
+	_start_game()

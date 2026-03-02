@@ -3,6 +3,8 @@
 [ext_resource type="Script" uid="uid://c1n7iyq46aqou" path="res://scripts/game_controller.gd" id="1_0jtfi"]
 [ext_resource type="Script" uid="uid://cejk1upqt0aff" path="res://scripts/game_board.gd" id="2_mq2xb"]
 [ext_resource type="Script" uid="uid://ngqustr4h5y" path="res://scripts/turn_manager.gd" id="3_cmh4g"]
+[ext_resource type="Script" uid="uid://cevljt1j1jvwy" path="res://scripts/board_ui.gd" id="3_mq2xb"]
+[ext_resource type="Script" uid="uid://ct1ri8l1vwcqh" path="res://scripts/shop_ui.gd" id="5_cmh4g"]
 
 [node name="GameController" type="Node2D" unique_id=1018729843]
 script = ExtResource("1_0jtfi")
@@ -10,27 +12,18 @@ script = ExtResource("1_0jtfi")
 [node name="GameBoard" type="Node2D" parent="." unique_id=1940137856]
 script = ExtResource("2_mq2xb")
 
+[node name="BoardUI" type="Node2D" parent="GameBoard" unique_id=2053776317 node_paths=PackedStringArray("game_board")]
+script = ExtResource("3_mq2xb")
+game_board = NodePath("..")
+
 [node name="TurnManager" type="Node" parent="." unique_id=1528772882]
 script = ExtResource("3_cmh4g")
 
 [node name="UI" type="CanvasLayer" parent="." unique_id=419858538]
 
-[node name="ScoreLabel" type="Label" parent="UI" unique_id=552146463]
-offset_left = 700.0
-offset_top = 20.0
-offset_right = 1000.0
-offset_bottom = 50.0
-theme_override_font_sizes/font_size = 20
-
-[node name="TurnLabel" type="Label" parent="UI" unique_id=853642317]
-offset_left = 700.0
-offset_top = 60.0
-offset_right = 1000.0
-offset_bottom = 90.0
-theme_override_font_sizes/font_size = 20
-
-[node name="StatusLabel" type="Label" parent="UI" unique_id=443598844]
-offset_left = 700.0
-offset_top = 100.0
-offset_right = 1260.0
-offset_bottom = 160.0
+[node name="ShopUI" type="Control" parent="UI" unique_id=129859313]
+layout_mode = 3
+anchors_preset = 0
+offset_right = 40.0
+offset_bottom = 40.0
+script = ExtResource("5_cmh4g")

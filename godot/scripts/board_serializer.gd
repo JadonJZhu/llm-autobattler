@@ -1,45 +1,67 @@
 class_name BoardSerializer
 extends RefCounted
-## Converts board state into a text representation for LLM consumption.
+## Converts 4x3 autochess board state into ASCII text for LLM consumption.
+##
+## Output format:
+##        col 0  col 1  col 2
+##        +------+------+------+
+## row 0  |  La  |  .   |  La  |  (LLM)
+## row 1  |  .   |  Lb  |  .   |  (LLM)
+## row 2  |  Ha  |  .   |  Hb  |  (Human)
+## row 3  |  .   |  Hd  |  .   |  (Human)
+##        +------+------+------+
+##
+## La = LLM unit type A, Hd = Human unit type D, . = empty
 
-const GRID_SIZE: int = 6
-const COLUMN_SEPARATOR: String = " | "
+const ROWS: int = 4
+const COLS: int = 3
+
+const OWNER_PREFIXES: Dictionary = {
+	Unit.Owner.LLM: "L",
+	Unit.Owner.HUMAN: "H",
+}
+
+const ROW_SIDE_LABELS: Dictionary = {
+	0: "(LLM)",
+	1: "(LLM)",
+	2: "(Human)",
+	3: "(Human)",
+}
 
 
 static func serialize(board: GameBoard) -> String:
-	var lines: PackedStringArray = PackedStringArray()
+	return serialize_snapshot(board.get_snapshot())
 
-	lines.append(_build_header())
-	lines.append(_build_divider())
 
-	for row: int in range(GRID_SIZE):
-		var row_cells: PackedStringArray = PackedStringArray()
-		for col: int in range(GRID_SIZE):
-			var tile: Tile = board.get_tile(Vector2i(col, row))
-			if tile:
-				row_cells.append(_pad_cell(tile.get_serialized_label()))
+static func serialize_snapshot(snapshot: Dictionary) -> String:
+	var lines: PackedStringArray = []
+
+	# Header
+	lines.append("       col 0  col 1  col 2")
+	lines.append("       +------+------+------+")
+
+	for row in range(ROWS):
+		var cells: PackedStringArray = []
+		for col in range(COLS):
+			var pos := Vector2i(row, col)
+			if snapshot.has(pos):
+				var data: Dictionary = snapshot[pos]
+				var prefix: String = OWNER_PREFIXES[data["owner"]]
+				var type_label: String = Unit.TYPE_LABELS[data["unit_type"]].to_lower()
+				cells.append(_pad_cell(prefix + type_label))
 			else:
-				row_cells.append(_pad_cell("?"))
-		lines.append(str(row) + " | " + COLUMN_SEPARATOR.join(row_cells) + " |")
+				cells.append(_pad_cell("."))
+		var side_label: String = ROW_SIDE_LABELS[row]
+		lines.append("row %d  |%s|  %s" % [row, "|".join(cells), side_label])
 
-	lines.append(_build_divider())
+	lines.append("       +------+------+------+")
 	return "\n".join(lines)
 
 
-static func _build_header() -> String:
-	var header_cells: PackedStringArray = PackedStringArray()
-	for col: int in range(GRID_SIZE):
-		header_cells.append(_pad_cell(str(col)))
-	return "  | " + COLUMN_SEPARATOR.join(header_cells) + " |"
-
-
-static func _build_divider() -> String:
-	return "  +" + "-".repeat(GRID_SIZE * 6 + 1) + "+"
-
-
 static func _pad_cell(text: String) -> String:
-	if text.length() == 1:
-		return " " + text + " "
-	elif text.length() == 2:
-		return " " + text
-	return text
+	# Each cell is 6 chars wide (including surrounding spaces)
+	var total_width: int = 6
+	var padding: int = total_width - text.length()
+	var left: int = padding / 2
+	var right: int = padding - left
+	return " ".repeat(left) + text + " ".repeat(right)

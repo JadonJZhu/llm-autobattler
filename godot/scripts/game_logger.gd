@@ -42,12 +42,40 @@ func log_human_turn(turn_number: int, flip_pos: Vector2i, score: int) -> void:
 	})
 
 
-func log_game_result(winner: String, final_score: int, total_turns: int) -> void:
-	log_turn(total_turns, {
+func log_prep_placement(turn_number: int, unit_owner: String, unit_type: String,
+		pos: Vector2i, gold_remaining: int) -> void:
+	log_turn(turn_number, {
+		"phase": "prep",
+		"actor": unit_owner,
+		"unit_type": unit_type,
+		"position": {"row": pos.x, "col": pos.y},
+		"gold_remaining": gold_remaining,
+	})
+
+
+func log_battle_step(step_number: int, active_owner: String, events: String) -> void:
+	log_turn(step_number, {
+		"phase": "battle",
+		"active_owner": active_owner,
+		"events": events,
+	})
+
+
+func log_game_result(winner: String, final_score: int = -1, total_turns: int = -1,
+		total_prep_turns: int = -1, total_battle_steps: int = -1) -> void:
+	var entry: Dictionary = {
 		"event": "game_over",
 		"winner": winner,
-		"final_score": final_score,
-	})
+	}
+	if final_score >= 0:
+		entry["final_score"] = final_score
+	if total_turns >= 0:
+		entry["total_turns"] = total_turns
+	if total_prep_turns >= 0:
+		entry["total_prep_turns"] = total_prep_turns
+	if total_battle_steps >= 0:
+		entry["total_battle_steps"] = total_battle_steps
+	log_turn(maxi(total_turns, total_battle_steps), entry)
 
 
 func save_log() -> void:
