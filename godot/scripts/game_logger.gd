@@ -78,7 +78,7 @@ func log_game_result(winner: String, final_score: int = -1, total_turns: int = -
 		entry["total_prep_turns"] = total_prep_turns
 	if total_battle_steps >= 0:
 		entry["total_battle_steps"] = total_battle_steps
-	log_turn(maxi(total_turns, total_battle_steps), entry)
+	log_turn(max(total_turns, total_battle_steps), entry)
 
 
 func record_battle_start(serialized_board: String) -> void:
@@ -143,38 +143,6 @@ func get_recent_reasoning(count: int = -1) -> Array[String]:
 	if count < 0 or count >= _reasoning_history.size():
 		return _reasoning_history.duplicate()
 	return _reasoning_history.slice(_reasoning_history.size() - count) as Array[String]
-
-
-var _experiment_results: Array[Dictionary] = []
-
-
-func log_experiment_game(game_number: int, llm_config_label: String,
-		human_config_label: String, outcome: Dictionary) -> void:
-	var entry: Dictionary = {
-		"game_number": game_number,
-		"llm_config": llm_config_label,
-		"human_config": human_config_label,
-		"winner": outcome.get("winner", "Unknown"),
-		"llm_score": int(outcome.get("llm_score", 0)),
-		"human_score": int(outcome.get("human_score", 0)),
-		"battle_steps": int(outcome.get("battle_steps", 0)),
-	}
-	_experiment_results.append(entry)
-
-
-func save_experiment_log(filename: String) -> void:
-	var file_path: String = LOG_DIRECTORY + filename
-	var file := FileAccess.open(file_path, FileAccess.WRITE)
-	if file == null:
-		push_error("GameLogger: Failed to open experiment log file: " + file_path)
-		return
-	file.store_string(JSON.stringify(_experiment_results, "\t"))
-	file.close()
-	print("GameLogger: Saved experiment log to " + file_path)
-
-
-func clear_experiment_results() -> void:
-	_experiment_results.clear()
 
 
 func save_log() -> void:

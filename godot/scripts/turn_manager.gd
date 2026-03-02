@@ -127,6 +127,9 @@ func apply_llm_prep_placement(type: UnitData.UnitType, pos: Vector2i) -> bool:
 	if not _board.is_position_valid_for(UnitData.Owner.LLM, pos):
 		push_error("TurnManager: Invalid LLM placement position: %s" % str(pos))
 		return false
+	if _board.get_snapshot().has(pos):
+		push_error("TurnManager: Cell already occupied at %s" % str(pos))
+		return false
 	if not _llm_shop.can_afford(type):
 		push_error("TurnManager: LLM cannot afford unit type: %s" % UnitData.TYPE_LABELS[type])
 		return false
@@ -175,6 +178,14 @@ func apply_human_prep_placement(type: UnitData.UnitType, pos: Vector2i) -> bool:
 
 	_check_prep_over()
 	return true
+
+
+func skip_prep_turn() -> void:
+	## Called when the active player cannot place any unit (no gold or no space).
+	## Advances the prep phase without placing.
+	if phase != GamePhase.PREP:
+		return
+	_check_prep_over()
 
 
 func _check_prep_over() -> void:

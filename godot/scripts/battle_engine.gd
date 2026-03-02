@@ -6,6 +6,7 @@ extends RefCounted
 
 const ROWS: int = GridConstants.ROWS
 const COLS: int = GridConstants.COLS
+static var NO_UNIT: Vector2i = Vector2i(-1, -1)
 
 # --- Public ---
 
@@ -31,7 +32,7 @@ func execute_step(snapshot: BattleSnapshot, active_owner: UnitData.Owner) -> Dic
 	}
 
 	var acting_unit := _pick_acting_unit(units, active_owner)
-	if acting_unit == Vector2i(-1, -1):
+	if acting_unit == NO_UNIT:
 		# No units can act — check terminal
 		result["event"] = "No units can act for %s (turn skipped)" % _owner_label(active_owner)
 		result["event_type"] = "pass"
@@ -42,25 +43,29 @@ func execute_step(snapshot: BattleSnapshot, active_owner: UnitData.Owner) -> Dic
 	result["acting_unit_pos"] = acting_unit
 	result["acting_unit_type"] = unit_data["unit_type"]
 
-	match unit_data["unit_type"]:
-		UnitData.UnitType.A:
-			_act_a(snapshot, units, acting_unit, unit_data["owner"], result)
-		UnitData.UnitType.B:
-			_act_b(snapshot, units, acting_unit, unit_data["owner"], result)
-		UnitData.UnitType.C:
-			_act_c(snapshot, units, acting_unit, unit_data["owner"], result)
-		UnitData.UnitType.D:
-			_act_d(units, acting_unit, unit_data["owner"], result)
+	var unit_type: UnitData.UnitType = unit_data["unit_type"]
+	var act_method: Callable = _get_act_method(unit_type)
+	act_method.call(snapshot, units, acting_unit, unit_data["owner"], result)
 
 	_check_terminal(snapshot, units, result)
 	return result
 
 
+func _get_act_method(unit_type: UnitData.UnitType) -> Callable:
+	match unit_type:
+		UnitData.UnitType.A: return _act_a
+		UnitData.UnitType.B: return _act_b
+		UnitData.UnitType.C: return _act_c
+		UnitData.UnitType.D: return _act_d
+	push_error("BattleEngine: Unknown unit type: %d" % unit_type)
+	return _act_a
+
+
 ## Check if neither side can make any more valid moves.
 func is_stalemate(snapshot: BattleSnapshot) -> bool:
 	var units: Dictionary = snapshot.units
-	var llm_can_act := _pick_acting_unit(units, UnitData.Owner.LLM) != Vector2i(-1, -1)
-	var human_can_act := _pick_acting_unit(units, UnitData.Owner.HUMAN) != Vector2i(-1, -1)
+	var llm_can_act := _pick_acting_unit(units, UnitData.Owner.LLM) != NO_UNIT
+	var human_can_act := _pick_acting_unit(units, UnitData.Owner.HUMAN) != NO_UNIT
 	return not llm_can_act and not human_can_act
 
 
@@ -133,9 +138,9 @@ func _act_c(
 		_try_advance(units, snapshot, pos, unit_owner, result)
 
 
-func _act_d(units: Dictionary, pos: Vector2i, unit_owner: UnitData.Owner, result: Dictionary) -> void:
+func _act_d(_snapshot: BattleSnapshot, units: Dictionary, pos: Vector2i, unit_owner: UnitData.Owner, result: Dictionary) -> void:
 	var closest := _find_closest_enemy(units, pos, unit_owner)
-	if closest != Vector2i(-1, -1):
+	if closest != NO_UNIT:
 		units.erase(closest)
 		result["removal"] = closest
 		result["event"] = "D at %s removes enemy at %s" % [pos, closest]
@@ -197,8 +202,8 @@ func _try_advance(
 
 
 func _find_closest_enemy(units: Dictionary, pos: Vector2i, unit_owner: UnitData.Owner) -> Vector2i:
-	var closest := Vector2i(-1, -1)
-	var best_distance: int = 999
+	var closest := NO_UNIT
+	var best_distance: int = ROWS * COLS + 1
 
 	# Collect enemies and sort by Manhattan distance, then col (left-to-right), then row (top-to-bottom)
 	var enemies: Array[Vector2i] = []
@@ -207,7 +212,7 @@ func _find_closest_enemy(units: Dictionary, pos: Vector2i, unit_owner: UnitData.
 			enemies.append(cell_pos)
 
 	if enemies.is_empty():
-		return Vector2i(-1, -1)
+		return NO_UNIT
 
 	for enemy_pos in enemies:
 		var distance: int = abs(enemy_pos.x - pos.x) + abs(enemy_pos.y - pos.y)
@@ -229,7 +234,7 @@ func _pick_acting_unit(units: Dictionary, active_owner: UnitData.Owner) -> Vecto
 	for candidate in candidates:
 		if _can_unit_act(units, candidate, active_owner):
 			return candidate
-	return Vector2i(-1, -1)
+	return NO_UNIT
 
 
 func _get_sorted_candidates(units: Dictionary, active_owner: UnitData.Owner) -> Array[Vector2i]:
@@ -261,24 +266,29 @@ func _can_unit_act(units: Dictionary, unit_pos: Vector2i, unit_owner: UnitData.O
 	var ahead: Vector2i = _cell_ahead(unit_pos, unit_owner)
 	var can_advance: bool = ahead.x < 0 or ahead.x >= ROWS or not units.has(ahead)
 
+	# A and D have unique checks; B and C share diagonal-attack-or-advance logic
 	match unit_type:
 		UnitData.UnitType.A:
 			return _has_enemy_at(units, ahead, unit_owner) or can_advance
 		UnitData.UnitType.B:
-			if unit_pos.y > 0:
-				var diag_left := Vector2i(ahead.x, ahead.y - 1)
-				if _has_enemy_at(units, diag_left, unit_owner):
-					return true
-			return can_advance
+			return _can_diagonal_attack_or_advance(units, unit_pos, ahead, unit_owner, -1, can_advance)
 		UnitData.UnitType.C:
-			if unit_pos.y < COLS - 1:
-				var diag_right := Vector2i(ahead.x, ahead.y + 1)
-				if _has_enemy_at(units, diag_right, unit_owner):
-					return true
-			return can_advance
+			return _can_diagonal_attack_or_advance(units, unit_pos, ahead, unit_owner, 1, can_advance)
 		UnitData.UnitType.D:
 			return _has_any_enemy(units, unit_owner)
+	push_error("BattleEngine: Unknown unit type in _can_unit_act: %d" % unit_type)
 	return false
+
+
+func _can_diagonal_attack_or_advance(units: Dictionary, unit_pos: Vector2i,
+		ahead: Vector2i, unit_owner: UnitData.Owner, col_offset: int,
+		can_advance: bool) -> bool:
+	var edge_col: int = 0 if col_offset < 0 else COLS - 1
+	if unit_pos.y != edge_col:
+		var diag := Vector2i(ahead.x, ahead.y + col_offset)
+		if _has_enemy_at(units, diag, unit_owner):
+			return true
+	return can_advance
 
 
 func _has_any_enemy(units: Dictionary, unit_owner: UnitData.Owner) -> bool:
@@ -297,8 +307,8 @@ func _check_terminal(snapshot: BattleSnapshot, units: Dictionary, result: Dictio
 		else:
 			human_count += 1
 
-	var llm_can_act: bool = _pick_acting_unit(units, UnitData.Owner.LLM) != Vector2i(-1, -1)
-	var human_can_act: bool = _pick_acting_unit(units, UnitData.Owner.HUMAN) != Vector2i(-1, -1)
+	var llm_can_act: bool = _pick_acting_unit(units, UnitData.Owner.LLM) != NO_UNIT
+	var human_can_act: bool = _pick_acting_unit(units, UnitData.Owner.HUMAN) != NO_UNIT
 	var both_empty: bool = llm_count == 0 and human_count == 0
 	var both_stuck: bool = not llm_can_act and not human_can_act
 	var llm_escaped: int = snapshot.llm_escaped

@@ -1,37 +1,19 @@
 class_name LlmPlayerAdapter
-extends Node
+extends LlmHttpBase
 ## Controls an LLM-driven player on the human side (rows 2-3) for LLM-vs-LLM experiments.
-## Mirrors LlmClient's API communication but builds prompts from the human perspective.
+## Extends LlmHttpBase for shared HTTP infrastructure. Builds prompts from the human perspective.
 
 signal human_llm_response_received(unit_type: UnitData.UnitType, grid_pos: Vector2i)
 signal human_llm_request_failed(error_message: String)
 
-const API_ENDPOINT: String = "https://api.anthropic.com/v1/messages"
-const API_MODEL: String = "claude-opus-4-6"
-const ANTHROPIC_VERSION: String = "2023-06-01"
-const API_KEY_FILE_PATH: String = "res://api_key.txt"
-const REQUEST_TIMEOUT_SECONDS: float = 120.0
-const MAX_TOKENS: int = 4096
-
-var _api_key: String = ""
-var _http_request: HTTPRequest
-var _is_requesting: bool = false
 var _mode_config: LlmModeConfig = LlmModeConfig.new()
 var _prompt_builder: LlmPromptBuilder = LlmPromptBuilder.new()
 var _response_parser: LlmResponseParser = LlmResponseParser.new()
 
 
 func _ready() -> void:
-	_load_api_key()
+	super._ready()
 	_response_parser.valid_rows = [2, 3]
-	_http_request = HTTPRequest.new()
-	_http_request.timeout = REQUEST_TIMEOUT_SECONDS
-	_http_request.request_completed.connect(_on_request_completed)
-	add_child(_http_request)
-
-
-func has_api_key() -> bool:
-	return not _api_key.is_empty()
 
 
 func set_mode_config(config: LlmModeConfig) -> void:
@@ -50,44 +32,26 @@ func request_human_llm_prep(board: GameBoard, human_shop: Shop, turn_number: int
 	_is_requesting = true
 	var system_prompt: String = _build_human_system_prompt()
 	var user_message: String = _build_human_user_message(board, human_shop, turn_number, game_history)
-	var request_body: Dictionary = _build_request_body(system_prompt, user_message)
-
-	var headers: PackedStringArray = PackedStringArray([
-		"Content-Type: application/json",
-		"x-api-key: " + _api_key,
-		"anthropic-version: " + ANTHROPIC_VERSION,
-	])
-
-	var json_body: String = JSON.stringify(request_body)
-	var error: Error = _http_request.request(API_ENDPOINT, headers, HTTPClient.METHOD_POST, json_body)
-	if error != OK:
-		_is_requesting = false
-		human_llm_request_failed.emit("HTTPRequest.request() failed with error code: %d" % error)
+	_send_request(system_prompt, user_message)
 
 
-func _load_api_key() -> void:
-	var file := FileAccess.open(API_KEY_FILE_PATH, FileAccess.READ)
-	if file == null:
-		push_warning("LlmPlayerAdapter: No API key file found at %s. Human LLM calls will fail." % API_KEY_FILE_PATH)
+func _on_api_response_parsed(response_text: String) -> void:
+	var parse_result: Dictionary = _response_parser.parse_place_command(response_text)
+	if parse_result.is_empty():
+		human_llm_request_failed.emit("Failed to parse PLACE command from human LLM response.")
 		return
-	_api_key = file.get_as_text().strip_edges()
-	file.close()
-	if _api_key.is_empty():
-		push_warning("LlmPlayerAdapter: API key file is empty.")
+	human_llm_response_received.emit(parse_result["unit_type"], parse_result["position"])
 
 
-func _build_request_body(system_prompt: String, user_message: String) -> Dictionary:
-	return {
-		"model": API_MODEL,
-		"max_tokens": MAX_TOKENS,
-		"system": system_prompt,
-		"messages": [
-			{
-				"role": "user",
-				"content": user_message,
-			}
-		],
-	}
+func _on_request_error(error_message: String) -> void:
+	human_llm_request_failed.emit(error_message)
+
+
+func _get_client_name() -> String:
+	return "LlmPlayerAdapter"
+
+
+# --- Human-perspective prompt building ---
 
 
 func _build_human_system_prompt() -> String:
@@ -175,47 +139,3 @@ func _build_human_user_message(board: GameBoard, human_shop: Shop, turn_number: 
 
 	parts.append("Choose a unit to place on your side of the board (rows 2-3).")
 	return "\n".join(parts)
-
-
-func _on_request_completed(result: int, response_code: int, _headers: PackedStringArray,
-		body: PackedByteArray) -> void:
-	_is_requesting = false
-
-	if result != HTTPRequest.RESULT_SUCCESS:
-		human_llm_request_failed.emit("HTTP request failed with result code: %d" % result)
-		return
-
-	if response_code != 200:
-		var error_text: String = body.get_string_from_utf8()
-		human_llm_request_failed.emit("API returned status %d: %s" % [response_code, error_text.left(500)])
-		return
-
-	var json_string: String = body.get_string_from_utf8()
-	var json := JSON.new()
-	var parse_error: Error = json.parse(json_string)
-	if parse_error != OK:
-		human_llm_request_failed.emit("Failed to parse API response JSON: %s" % json.get_error_message())
-		return
-
-	var response: Dictionary = json.data
-	_process_api_response(response)
-
-
-func _process_api_response(response: Dictionary) -> void:
-	var content_blocks: Array = response.get("content", [])
-	var response_text: String = ""
-
-	for block in content_blocks:
-		var block_dict: Dictionary = block as Dictionary
-		var block_type: String = block_dict.get("type", "")
-		if block_type == "text":
-			response_text += block_dict.get("text", "")
-
-	print("LlmPlayerAdapter: Response text:\n" + response_text)
-
-	var parse_result: Dictionary = _response_parser.parse_place_command(response_text)
-	if parse_result.is_empty():
-		human_llm_request_failed.emit("Failed to parse PLACE command from human LLM response.")
-		return
-
-	human_llm_response_received.emit(parse_result["unit_type"], parse_result["position"])

@@ -48,11 +48,18 @@ godot/
     battle_engine.gd       — Pure battle logic; operates on BattleSnapshot, never holds Nodes
     battle_snapshot.gd     — Mutable snapshot of live battle state (units dict + escaped counts)
     board_serializer.gd    — Board state → ASCII text grid for LLM prompt and logging
-    llm_client.gd          — Autoload singleton. HTTP requests to Claude API; emits signals
+    llm_http_base.gd       — Shared HTTP base class for Claude API communication
+    llm_client.gd          — Autoload singleton (extends LlmHttpBase). LLM player API requests
+    llm_player_adapter.gd  — Human-side LLM adapter (extends LlmHttpBase) for experiments
     llm_prompt_builder.gd  — Builds system prompt and user message for LLM prep turn
     llm_response_parser.gd — Parses "PLACE: <type> (row, col)" from LLM response text
     llm_fallback.gd        — Random valid placement when LLM fails or API key is absent
+    llm_mode_config.gd     — Pure data class for LLM mode toggles (instructions, examples, reflection)
+    reflection_client.gd   — Requests strategic reflection feedback from Claude API
     game_logger.gd         — Autoload singleton. JSON logging to user://game_logs/; replay data
+    experiment_coordinator.gd — Manages LLM-vs-LLM experiment lifecycle and human-side LLM
+    experiment_runner.gd   — Tracks experiment trial state (game count, win/loss tallies)
+    experiment_logger.gd   — Persists per-experiment game results to JSON
     grid_constants.gd      — ROWS=4, COLS=3, LLM_ROWS=[0,1], HUMAN_ROWS=[2,3]
     style_utils.gd         — StyleBoxFlat factory helper (bg, border, corner radius)
 ```

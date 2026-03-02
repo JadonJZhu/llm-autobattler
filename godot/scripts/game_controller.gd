@@ -1,6 +1,7 @@
 extends Node2D
 ## Root controller for the autochess game scene.
 ## Wires together GameBoard, BoardUI, TurnManager, LlmClient, and ShopUI.
+## Experiment logic is delegated to ExperimentCoordinator.
 
 # --- Scene references ---
 
@@ -23,14 +24,12 @@ var _mode_config: LlmModeConfig = LlmModeConfig.new()
 var _reflection_client: ReflectionClient
 var _games_since_reflection: int = 0
 var _awaiting_reflection: bool = false
-var _experiment_runner: ExperimentRunner
-var _human_llm_adapter: LlmPlayerAdapter
-var experiment_mode: bool = false
+var _experiment_coordinator: ExperimentCoordinator
 
 
 func _ready() -> void:
 	_setup_reflection_client()
-	_setup_experiment_nodes()
+	_setup_experiment_coordinator()
 	_connect_signals()
 	_setup_instructions_menu()
 	LlmClient.set_mode_config(_mode_config)
@@ -94,8 +93,10 @@ func _on_prep_turn_changed(turn: TurnManager.PrepTurn) -> void:
 
 	if turn == TurnManager.PrepTurn.LLM:
 		_trigger_llm_turn()
-	elif turn == TurnManager.PrepTurn.HUMAN and experiment_mode:
-		_trigger_human_llm_turn()
+	elif turn == TurnManager.PrepTurn.HUMAN and _experiment_coordinator.experiment_mode:
+		_experiment_coordinator.trigger_human_llm_turn(
+			game_board, _human_shop, turn_manager.turn_number
+		)
 
 
 func _trigger_llm_turn() -> void:
@@ -133,7 +134,10 @@ func _on_llm_reasoning_captured(reasoning_text: String) -> void:
 func _apply_fallback_llm_prep() -> void:
 	var fallback: Dictionary = _llm_fallback.pick_random_placement(game_board, _llm_shop)
 	if fallback.is_empty():
-		push_warning("LLM has no affordable units. Skipping.")
+		push_warning("LLM has no affordable units or space. Skipping turn.")
+		shop_ui.update_status("LLM has no valid moves. Skipping.")
+		turn_manager.skip_prep_turn()
+		_refresh_shop_ui()
 		return
 
 	var success: bool = turn_manager.apply_llm_prep_placement(
@@ -141,7 +145,8 @@ func _apply_fallback_llm_prep() -> void:
 		fallback["position"]
 	)
 	if not success:
-		push_warning("Random LLM placement failed.")
+		push_warning("Random LLM placement failed. Skipping turn.")
+		turn_manager.skip_prep_turn()
 	_refresh_shop_ui()
 
 
@@ -180,34 +185,21 @@ func _on_game_over(winner, score_data: Dictionary) -> void:
 		winner_text = "LLM wins!"
 	else:
 		winner_text = "Human wins!"
-	var llm_score: int = int(score_data.get("llm_score", 0))
-	var human_score: int = int(score_data.get("human_score", 0))
-	var llm_remaining: int = int(score_data.get("llm_remaining", 0))
-	var human_remaining: int = int(score_data.get("human_remaining", 0))
-	var llm_escaped: int = int(score_data.get("llm_escaped", 0))
-	var human_escaped: int = int(score_data.get("human_escaped", 0))
 
-	if experiment_mode and _experiment_runner.is_running():
-		var outcome: Dictionary = score_data.duplicate()
-		outcome["winner"] = winner_text
-		outcome["battle_steps"] = turn_manager.battle_step_number
-		_experiment_runner.record_game_result(outcome)
-		GameLogger.log_experiment_game(
-			_experiment_runner.current_game,
-			_experiment_runner.llm_config.get_label(),
-			_experiment_runner.human_config.get_label(),
-			outcome
+	if _experiment_coordinator.is_experiment_running():
+		var still_running: bool = _experiment_coordinator.record_game_result(
+			winner_text, score_data, turn_manager.battle_step_number
 		)
-		shop_ui.update_status(
-			"[Experiment %s] %s | LLM %d — Human %d" % [
-				_experiment_runner.get_progress(), winner_text,
-				llm_score, human_score,
-			]
-		)
-		if _experiment_runner.is_running():
+		if still_running:
 			_restart_game()
 		return
 
+	var llm_score: int = int(score_data.get("llm_score", 0))
+	var llm_remaining: int = int(score_data.get("llm_remaining", 0))
+	var llm_escaped: int = int(score_data.get("llm_escaped", 0))
+	var human_score: int = int(score_data.get("human_score", 0))
+	var human_remaining: int = int(score_data.get("human_remaining", 0))
+	var human_escaped: int = int(score_data.get("human_escaped", 0))
 	shop_ui.update_status(
 		"%s LLM: %d pts (%d remaining + %d escaped) — Human: %d pts (%d remaining + %d escaped). Click anywhere to restart." % [
 			winner_text,
@@ -308,93 +300,34 @@ func _on_mode_config_changed(config: LlmModeConfig) -> void:
 # --- Experiment Mode ---
 
 
-func _setup_experiment_nodes() -> void:
-	_experiment_runner = ExperimentRunner.new()
-	_experiment_runner.trial_completed.connect(_on_trial_completed)
-	add_child(_experiment_runner)
-
-	_human_llm_adapter = LlmPlayerAdapter.new()
-	_human_llm_adapter.human_llm_response_received.connect(_on_human_llm_response_received)
-	_human_llm_adapter.human_llm_request_failed.connect(_on_human_llm_request_failed)
-	add_child(_human_llm_adapter)
+func _setup_experiment_coordinator() -> void:
+	_experiment_coordinator = ExperimentCoordinator.new()
+	_experiment_coordinator.experiment_status_updated.connect(_on_experiment_status)
+	_experiment_coordinator.experiment_ended.connect(_on_experiment_ended)
+	_experiment_coordinator.human_llm_placement_ready.connect(_on_human_llm_placement_ready)
+	_experiment_coordinator.human_llm_placement_failed.connect(_on_human_llm_placement_failed)
+	add_child(_experiment_coordinator)
 
 
 func start_experiment(llm_cfg: LlmModeConfig, human_cfg: LlmModeConfig,
 		num_games: int = 30) -> void:
-	experiment_mode = true
 	_mode_config = llm_cfg
 	LlmClient.set_mode_config(llm_cfg)
-	_human_llm_adapter.set_mode_config(human_cfg)
-	GameLogger.clear_history()
-	GameLogger.clear_experiment_results()
-	_experiment_runner.start_trial(llm_cfg, human_cfg, num_games)
+	_experiment_coordinator.start_experiment(llm_cfg, human_cfg, num_games)
 	turn_manager.set_autoplay(true)
 	shop_ui.disable_all_shop_buttons()
 	_start_game()
 
 
 func stop_experiment() -> void:
-	experiment_mode = false
-	_experiment_runner.stop_trial()
+	_experiment_coordinator.stop_experiment()
 
 
-func _trigger_human_llm_turn() -> void:
-	if _human_llm_adapter.has_api_key():
-		shop_ui.update_status("Human (LLM) is thinking...")
-		_human_llm_adapter.request_human_llm_prep(
-			game_board, _human_shop,
-			turn_manager.turn_number, GameLogger.get_game_history()
-		)
-	else:
-		_apply_fallback_human_llm_prep()
+func _on_experiment_status(message: String) -> void:
+	shop_ui.update_status(message)
 
 
-func _on_human_llm_response_received(unit_type: UnitData.UnitType, grid_pos: Vector2i) -> void:
-	var success: bool = turn_manager.apply_human_prep_placement(unit_type, grid_pos)
-	if not success:
-		push_warning("Human LLM placement failed for %s at %s. Falling back to random." % [
-			UnitData.TYPE_LABELS[unit_type], str(grid_pos)
-		])
-		_apply_fallback_human_llm_prep()
-		return
-	_refresh_shop_ui()
-
-
-func _on_human_llm_request_failed(error_message: String) -> void:
-	push_error("Human LLM request failed: " + error_message)
-	shop_ui.update_status("Human LLM error. Using random placement.")
-	_apply_fallback_human_llm_prep()
-
-
-func _apply_fallback_human_llm_prep() -> void:
-	var affordable_types: Array[UnitData.UnitType] = []
-	for unit_type in _human_shop.available_types:
-		if _human_shop.can_afford(unit_type):
-			affordable_types.append(unit_type)
-	if affordable_types.is_empty():
-		push_warning("Human LLM has no affordable units. Skipping.")
-		return
-
-	var chosen_type: UnitData.UnitType = affordable_types[randi() % affordable_types.size()]
-	var empty_positions: Array[Vector2i] = game_board.get_empty_positions_for(UnitData.Owner.HUMAN)
-	if empty_positions.is_empty():
-		push_warning("Human LLM has no empty positions. Skipping.")
-		return
-
-	var chosen_pos: Vector2i = empty_positions[randi() % empty_positions.size()]
-	var success: bool = turn_manager.apply_human_prep_placement(chosen_type, chosen_pos)
-	if not success:
-		push_warning("Random human LLM placement failed.")
-	_refresh_shop_ui()
-
-
-func _on_trial_completed(results: Dictionary) -> void:
-	experiment_mode = false
-	var filename: String = "experiment_%s_vs_%s.json" % [
-		results.get("llm_config_label", "unknown"),
-		results.get("human_config_label", "unknown"),
-	]
-	GameLogger.save_experiment_log(filename)
+func _on_experiment_ended(results: Dictionary) -> void:
 	shop_ui.update_status(
 		"Experiment complete! LLM wins: %d | Human wins: %d | Ties: %d" % [
 			results.get("llm_wins", 0),
@@ -403,3 +336,18 @@ func _on_trial_completed(results: Dictionary) -> void:
 		]
 	)
 	print("Experiment results: ", results)
+
+
+func _on_human_llm_placement_ready(unit_type: UnitData.UnitType, grid_pos: Vector2i) -> void:
+	var success: bool = turn_manager.apply_human_prep_placement(unit_type, grid_pos)
+	if not success:
+		push_warning("Human LLM placement failed for %s at %s. Falling back." % [
+			UnitData.TYPE_LABELS[unit_type], str(grid_pos)
+		])
+		turn_manager.skip_prep_turn()
+	_refresh_shop_ui()
+
+
+func _on_human_llm_placement_failed() -> void:
+	turn_manager.skip_prep_turn()
+	_refresh_shop_ui()
