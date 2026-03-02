@@ -11,10 +11,10 @@ enum PrepTurn { HUMAN, LLM }
 
 signal phase_changed(phase: GamePhase)
 signal prep_turn_changed(turn: PrepTurn)
-signal human_unit_selected(unit_type: Unit.UnitType)
-signal prep_placement_made(unit_owner: Unit.Owner, unit_type: Unit.UnitType, pos: Vector2i)
+signal human_unit_selected(unit_type: UnitData.UnitType)
+signal prep_placement_made(unit_owner: UnitData.Owner, unit_type: UnitData.UnitType, pos: Vector2i)
 signal battle_step_completed(step_result: Dictionary)
-signal game_over(winner, score_data: Dictionary)  # Unit.Owner or null for tie
+signal game_over(winner, score_data: Dictionary)  # UnitData.Owner or null for tie
 signal status_updated(message: String)
 
 # --- Exports ---
@@ -32,10 +32,10 @@ var _board: GameBoard
 var _llm_shop: Shop
 var _human_shop: Shop
 var _battle_engine: BattleEngine
-var _battle_snapshot: Dictionary
-var _battle_active_owner: Unit.Owner
+var _battle_snapshot: BattleSnapshot
+var _battle_active_owner: UnitData.Owner
 var _battle_timer: Timer
-var _selected_unit_type: Unit.UnitType = Unit.UnitType.A
+var _selected_unit_type: UnitData.UnitType = UnitData.UnitType.A
 var _has_selection: bool = false
 
 
@@ -71,16 +71,16 @@ func initialize(board: GameBoard, llm_shop: Shop, human_shop: Shop) -> void:
 
 # --- Prep Phase: Human ---
 
-func select_unit_for_placement(type: Unit.UnitType) -> void:
+func select_unit_for_placement(type: UnitData.UnitType) -> void:
 	if phase != GamePhase.PREP or prep_turn != PrepTurn.HUMAN:
 		return
 	if not _human_shop.can_afford(type):
-		status_updated.emit("Cannot afford unit type %s" % Unit.TYPE_LABELS[type])
+		status_updated.emit("Cannot afford unit type %s" % UnitData.TYPE_LABELS[type])
 		return
 	_selected_unit_type = type
 	_has_selection = true
 	human_unit_selected.emit(type)
-	status_updated.emit("Selected %s — click a cell to place" % Unit.TYPE_LABELS[type])
+	status_updated.emit("Selected %s — click a cell to place" % UnitData.TYPE_LABELS[type])
 
 
 func _on_cell_clicked(pos: Vector2i) -> void:
@@ -89,7 +89,7 @@ func _on_cell_clicked(pos: Vector2i) -> void:
 	if not _has_selection:
 		status_updated.emit("Select a unit type from the shop first")
 		return
-	if not _board.is_position_valid_for(Unit.Owner.HUMAN, pos):
+	if not _board.is_position_valid_for(UnitData.Owner.HUMAN, pos):
 		status_updated.emit("You can only place units on your side (rows 2-3)")
 		return
 	if _board.get_snapshot().has(pos):
@@ -101,44 +101,44 @@ func _on_cell_clicked(pos: Vector2i) -> void:
 		status_updated.emit("Cannot afford that unit")
 		return
 
-	_board.place_unit(_selected_unit_type, Unit.Owner.HUMAN, pos)
+	_board.place_unit(_selected_unit_type, UnitData.Owner.HUMAN, pos)
 	turn_number += 1
 	_has_selection = false
 
-	var type_label: String = Unit.TYPE_LABELS[_selected_unit_type]
+	var type_label: String = UnitData.TYPE_LABELS[_selected_unit_type]
 	status_updated.emit("Human placed %s at (%d, %d) | Gold: %d" % [
 		type_label, pos.x, pos.y, _human_shop.gold
 	])
 
 	GameLogger.log_prep_placement(turn_number, "human", type_label, pos, _human_shop.gold)
-	prep_placement_made.emit(Unit.Owner.HUMAN, _selected_unit_type, pos)
+	prep_placement_made.emit(UnitData.Owner.HUMAN, _selected_unit_type, pos)
 
 	_check_prep_over()
 
 
 # --- Prep Phase: LLM ---
 
-func apply_llm_prep_placement(type: Unit.UnitType, pos: Vector2i) -> bool:
+func apply_llm_prep_placement(type: UnitData.UnitType, pos: Vector2i) -> bool:
 	if phase != GamePhase.PREP or prep_turn != PrepTurn.LLM:
 		return false
-	if not _board.is_position_valid_for(Unit.Owner.LLM, pos):
+	if not _board.is_position_valid_for(UnitData.Owner.LLM, pos):
 		push_error("TurnManager: Invalid LLM placement position: %s" % str(pos))
 		return false
 	if not _llm_shop.can_afford(type):
-		push_error("TurnManager: LLM cannot afford unit type: %s" % Unit.TYPE_LABELS[type])
+		push_error("TurnManager: LLM cannot afford unit type: %s" % UnitData.TYPE_LABELS[type])
 		return false
 
 	_llm_shop.purchase(type)
-	_board.place_unit(type, Unit.Owner.LLM, pos)
+	_board.place_unit(type, UnitData.Owner.LLM, pos)
 	turn_number += 1
 
-	var type_label: String = Unit.TYPE_LABELS[type]
+	var type_label: String = UnitData.TYPE_LABELS[type]
 	status_updated.emit("LLM placed %s at (%d, %d) | Gold: %d" % [
 		type_label, pos.x, pos.y, _llm_shop.gold
 	])
 
 	GameLogger.log_prep_placement(turn_number, "llm", type_label, pos, _llm_shop.gold)
-	prep_placement_made.emit(Unit.Owner.LLM, type, pos)
+	prep_placement_made.emit(UnitData.Owner.LLM, type, pos)
 
 	_check_prep_over()
 	return true
@@ -149,8 +149,8 @@ func _check_prep_over() -> void:
 	var human_can_buy: bool = _human_shop.can_afford_any()
 
 	# Also check if there are empty positions
-	var llm_has_space: bool = not _board.get_empty_positions_for(Unit.Owner.LLM).is_empty()
-	var human_has_space: bool = not _board.get_empty_positions_for(Unit.Owner.HUMAN).is_empty()
+	var llm_has_space: bool = not _board.get_empty_positions_for(UnitData.Owner.LLM).is_empty()
+	var human_has_space: bool = not _board.get_empty_positions_for(UnitData.Owner.HUMAN).is_empty()
 
 	var llm_done: bool = not llm_can_buy or not llm_has_space
 	var human_done: bool = not human_can_buy or not human_has_space
@@ -181,9 +181,11 @@ func _check_prep_over() -> void:
 func _start_battle() -> void:
 	phase = GamePhase.BATTLE
 	battle_step_number = 0
-	_battle_snapshot = _board.get_snapshot()
-	_battle_active_owner = Unit.Owner.LLM  # LLM always goes first
-	GameLogger.record_battle_start(BoardSerializer.serialize_snapshot(_battle_snapshot))
+	_battle_snapshot = BattleSnapshot.from_board_snapshot(_board.get_snapshot())
+	_battle_active_owner = UnitData.Owner.LLM  # LLM always goes first
+	GameLogger.record_battle_start(
+		BoardSerializer.serialize_snapshot(_battle_snapshot.to_dictionary_with_meta())
+	)
 
 	status_updated.emit("Battle begins! LLM moves first.")
 	phase_changed.emit(phase)
@@ -204,7 +206,7 @@ func _on_battle_timer_timeout() -> void:
 	# Apply visual changes to the board
 	_board.apply_battle_step(step_result)
 
-	var owner_label: String = "LLM" if _battle_active_owner == Unit.Owner.LLM else "Human"
+	var owner_label: String = "LLM" if _battle_active_owner == UnitData.Owner.LLM else "Human"
 	GameLogger.log_battle_step(battle_step_number, owner_label, step_result["event"])
 
 	battle_step_completed.emit(step_result)
@@ -214,10 +216,10 @@ func _on_battle_timer_timeout() -> void:
 		return
 
 	# Toggle active owner
-	if _battle_active_owner == Unit.Owner.LLM:
-		_battle_active_owner = Unit.Owner.HUMAN
+	if _battle_active_owner == UnitData.Owner.LLM:
+		_battle_active_owner = UnitData.Owner.HUMAN
 	else:
-		_battle_active_owner = Unit.Owner.LLM
+		_battle_active_owner = UnitData.Owner.LLM
 
 	# Schedule next step
 	_battle_timer.start()
@@ -230,7 +232,7 @@ func _end_game(step_result: Dictionary) -> void:
 	var winner_label: String
 	if winner == null:
 		winner_label = "Tie"
-	elif winner == Unit.Owner.LLM:
+	elif winner == UnitData.Owner.LLM:
 		winner_label = "LLM"
 	else:
 		winner_label = "Human"

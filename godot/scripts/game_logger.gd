@@ -28,25 +28,6 @@ func log_turn(turn_number: int, turn_data: Dictionary) -> void:
 	_log_entries.append(entry)
 
 
-func log_llm_turn(turn_number: int, flip_pos: Vector2i, lock_pos: Vector2i,
-		score: int, reasoning: String) -> void:
-	log_turn(turn_number, {
-		"actor": "llm",
-		"flip_position": {"x": flip_pos.x, "y": flip_pos.y},
-		"lock_position": {"x": lock_pos.x, "y": lock_pos.y},
-		"correctness_score": score,
-		"reasoning": reasoning,
-	})
-
-
-func log_human_turn(turn_number: int, flip_pos: Vector2i, score: int) -> void:
-	log_turn(turn_number, {
-		"actor": "human",
-		"flip_position": {"x": flip_pos.x, "y": flip_pos.y},
-		"correctness_score": score,
-	})
-
-
 func log_prep_placement(turn_number: int, unit_owner: String, unit_type: String,
 		pos: Vector2i, gold_remaining: int) -> void:
 	log_turn(turn_number, {

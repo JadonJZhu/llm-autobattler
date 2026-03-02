@@ -13,12 +13,12 @@ extends RefCounted
 ##
 ## La = LLM unit type A, Hd = Human unit type D, . = empty
 
-const ROWS: int = 4
-const COLS: int = 3
+const ROWS: int = GridConstants.ROWS
+const COLS: int = GridConstants.COLS
 
 const OWNER_PREFIXES: Dictionary = {
-	Unit.Owner.LLM: "L",
-	Unit.Owner.HUMAN: "H",
+	UnitData.Owner.LLM: "L",
+	UnitData.Owner.HUMAN: "H",
 }
 
 const ROW_SIDE_LABELS: Dictionary = {
@@ -47,7 +47,7 @@ static func serialize_snapshot(snapshot: Dictionary) -> String:
 			if snapshot.has(pos):
 				var data: Dictionary = snapshot[pos]
 				var prefix: String = OWNER_PREFIXES[data["owner"]]
-				var type_label: String = Unit.TYPE_LABELS[data["unit_type"]].to_lower()
+				var type_label: String = UnitData.TYPE_LABELS[data["unit_type"]].to_lower()
 				cells.append(_pad_cell(prefix + type_label))
 			else:
 				cells.append(_pad_cell("."))
@@ -82,7 +82,7 @@ static func _compute_score_summary(snapshot: Dictionary) -> Dictionary:
 		if key is Vector2i:
 			var pos: Vector2i = key
 			var data: Dictionary = snapshot[pos]
-			if data.get("owner", Unit.Owner.LLM) == Unit.Owner.LLM:
+			if data.get("owner", UnitData.Owner.LLM) == UnitData.Owner.LLM:
 				llm_remaining += 1
 			else:
 				human_remaining += 1

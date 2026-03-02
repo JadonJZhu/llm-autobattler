@@ -9,7 +9,7 @@ const SHOP_SIZE: int = 3
 
 # --- State ---
 
-var available_types: Array[Unit.UnitType]
+var available_types: Array[UnitData.UnitType]
 var gold: int
 
 
@@ -20,41 +20,41 @@ func _init() -> void:
 
 static func create_randomized() -> Shop:
 	var shop := Shop.new()
-	var all_types: Array[Unit.UnitType] = [
-		Unit.UnitType.A,
-		Unit.UnitType.B,
-		Unit.UnitType.C,
-		Unit.UnitType.D,
+	var all_types: Array[UnitData.UnitType] = [
+		UnitData.UnitType.A,
+		UnitData.UnitType.B,
+		UnitData.UnitType.C,
+		UnitData.UnitType.D,
 	]
 	all_types.shuffle()
 	shop.available_types.assign(all_types.slice(0, SHOP_SIZE))
 	return shop
 
 
-func can_afford(type: Unit.UnitType) -> bool:
+func can_afford(type: UnitData.UnitType) -> bool:
 	if type not in available_types:
 		return false
-	return gold >= Unit.UNIT_COSTS[type]
+	return gold >= UnitData.UNIT_COSTS[type]
 
 
 func can_afford_any() -> bool:
 	for type in available_types:
-		if gold >= Unit.UNIT_COSTS[type]:
+		if gold >= UnitData.UNIT_COSTS[type]:
 			return true
 	return false
 
 
-func purchase(type: Unit.UnitType) -> bool:
+func purchase(type: UnitData.UnitType) -> bool:
 	if not can_afford(type):
 		return false
-	gold -= Unit.UNIT_COSTS[type]
+	gold -= UnitData.UNIT_COSTS[type]
 	return true
 
 
 func get_purchase_summary() -> String:
 	var parts: PackedStringArray = []
 	for type in available_types:
-		var label: String = Unit.TYPE_LABELS[type]
-		var cost: int = Unit.UNIT_COSTS[type]
+		var label: String = UnitData.TYPE_LABELS[type]
+		var cost: int = UnitData.UNIT_COSTS[type]
 		parts.append("%s(%dg)" % [label, cost])
 	return "%s | Gold: %d" % [", ".join(parts), gold]

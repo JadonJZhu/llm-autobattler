@@ -5,10 +5,10 @@ extends Node2D
 signal cell_clicked(grid_position: Vector2i)
 signal board_ready
 
-const ROWS: int = 4
-const COLS: int = 3
-const LLM_ROWS: Array[int] = [0, 1]
-const HUMAN_ROWS: Array[int] = [2, 3]
+const ROWS: int = GridConstants.ROWS
+const COLS: int = GridConstants.COLS
+const LLM_ROWS: Array[int] = GridConstants.LLM_ROWS
+const HUMAN_ROWS: Array[int] = GridConstants.HUMAN_ROWS
 const CELL_SIZE: int = 96
 const CELL_SPACING: int = 108
 
@@ -28,7 +28,7 @@ func initialize() -> void:
 	board_ready.emit()
 
 
-func place_unit(type: Unit.UnitType, unit_owner: Unit.Owner, pos: Vector2i) -> bool:
+func place_unit(type: UnitData.UnitType, unit_owner: UnitData.Owner, pos: Vector2i) -> bool:
 	if not is_position_valid_for(unit_owner, pos):
 		return false
 	if _units.has(pos):
@@ -87,18 +87,18 @@ func apply_battle_step(step_result: Dictionary) -> void:
 		move_unit(move_data["from"], move_data["to"])
 
 
-func is_position_valid_for(unit_owner: Unit.Owner, pos: Vector2i) -> bool:
+func is_position_valid_for(unit_owner: UnitData.Owner, pos: Vector2i) -> bool:
 	if pos.x < 0 or pos.x >= ROWS or pos.y < 0 or pos.y >= COLS:
 		return false
-	if unit_owner == Unit.Owner.LLM:
+	if unit_owner == UnitData.Owner.LLM:
 		return pos.x in LLM_ROWS
 	else:
 		return pos.x in HUMAN_ROWS
 
 
-func get_empty_positions_for(unit_owner: Unit.Owner) -> Array[Vector2i]:
+func get_empty_positions_for(unit_owner: UnitData.Owner) -> Array[Vector2i]:
 	var positions: Array[Vector2i] = []
-	var rows: Array[int] = LLM_ROWS if unit_owner == Unit.Owner.LLM else HUMAN_ROWS
+	var rows: Array[int] = LLM_ROWS if unit_owner == UnitData.Owner.LLM else HUMAN_ROWS
 	for row in rows:
 		for col in range(COLS):
 			var pos := Vector2i(row, col)
@@ -107,7 +107,7 @@ func get_empty_positions_for(unit_owner: Unit.Owner) -> Array[Vector2i]:
 	return positions
 
 
-func has_units_for(unit_owner: Unit.Owner) -> bool:
+func has_units_for(unit_owner: UnitData.Owner) -> bool:
 	for pos: Vector2i in _units:
 		if _units[pos].unit_owner == unit_owner:
 			return true

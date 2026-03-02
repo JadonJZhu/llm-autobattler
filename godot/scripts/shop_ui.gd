@@ -3,7 +3,7 @@ extends Control
 ## Owns all shop UI: gold labels, shop buttons, turn label, and status label.
 ## Emits shop_button_pressed when the human player selects a unit to buy.
 
-signal shop_button_pressed(unit_type: Unit.UnitType)
+signal shop_button_pressed(unit_type: UnitData.UnitType)
 
 const UI_X_OFFSET: float = 700.0
 const UI_WIDTH: float = 300.0
@@ -11,6 +11,8 @@ const LABEL_FONT_SIZE: int = 20
 const SHOP_BUTTON_SIZE: Vector2 = Vector2(80, 40)
 const SHOP_BUTTON_CORNER_RADIUS: int = 4
 const SHOP_BUTTON_BORDER_WIDTH: int = 0
+const SHOP_BUTTON_SELECTED_BORDER_WIDTH: int = 3
+const SHOP_BUTTON_SELECTED_BORDER_COLOR: Color = Color.WHITE
 
 var _llm_gold_label: Label
 var _llm_shop_container: HBoxContainer
@@ -20,6 +22,9 @@ var _turn_label: Label
 var _status_label: Label
 var _human_shop_buttons: Array[Button] = []
 var _llm_shop_buttons: Array[Button] = []
+var _human_button_by_type: Dictionary = {}  # UnitData.UnitType -> Button
+var _has_human_selection: bool = false
+var _selected_human_unit_type: UnitData.UnitType = UnitData.UnitType.A
 
 
 func _ready() -> void:
@@ -48,13 +53,27 @@ func update_status(text: String) -> void:
 
 func update_human_shop_buttons(is_human_prep: bool, human_shop: Shop) -> void:
 	for i in range(_human_shop_buttons.size()):
-		var type: Unit.UnitType = human_shop.available_types[i]
+		var type: UnitData.UnitType = human_shop.available_types[i]
 		_human_shop_buttons[i].disabled = not is_human_prep or not human_shop.can_afford(type)
+	if not is_human_prep:
+		clear_human_selection()
 
 
 func disable_all_shop_buttons() -> void:
 	for button in _human_shop_buttons:
 		button.disabled = true
+	clear_human_selection()
+
+
+func set_selected_human_unit(type: UnitData.UnitType) -> void:
+	_has_human_selection = true
+	_selected_human_unit_type = type
+	_refresh_human_button_selection()
+
+
+func clear_human_selection() -> void:
+	_has_human_selection = false
+	_refresh_human_button_selection()
 
 
 # --- Private ---
@@ -96,12 +115,15 @@ func _build_human_shop_ui(human_shop: Shop) -> void:
 	for button in _human_shop_buttons:
 		button.queue_free()
 	_human_shop_buttons.clear()
+	_human_button_by_type.clear()
+	_has_human_selection = false
 
 	for type in human_shop.available_types:
-		var button := _create_shop_button(type, Unit.Owner.HUMAN)
+		var button := _create_shop_button(type, UnitData.Owner.HUMAN, false)
 		button.pressed.connect(shop_button_pressed.emit.bind(type))
 		_human_shop_container.add_child(button)
 		_human_shop_buttons.append(button)
+		_human_button_by_type[type] = button
 
 
 func _build_llm_shop_ui(llm_shop: Shop) -> void:
@@ -110,42 +132,19 @@ func _build_llm_shop_ui(llm_shop: Shop) -> void:
 	_llm_shop_buttons.clear()
 
 	for type in llm_shop.available_types:
-		var button := _create_shop_button(type, Unit.Owner.LLM)
+		var button := _create_shop_button(type, UnitData.Owner.LLM, false)
 		button.disabled = true
 		_llm_shop_container.add_child(button)
 		_llm_shop_buttons.append(button)
 
 
-func _create_shop_button(type: Unit.UnitType, owner: Unit.Owner) -> Button:
-	var label_text: String = Unit.TYPE_LABELS[type]
-	var cost: int = Unit.UNIT_COSTS[type]
+func _create_shop_button(type: UnitData.UnitType, unit_owner: UnitData.Owner, is_selected: bool) -> Button:
+	var label_text: String = UnitData.TYPE_LABELS[type]
+	var cost: int = UnitData.UNIT_COSTS[type]
 	var button := Button.new()
 	button.text = "%s (%dg)" % [label_text, cost]
 	button.custom_minimum_size = SHOP_BUTTON_SIZE
-
-	var normal_style := StyleBoxFlat.new()
-	normal_style.bg_color = Unit.TYPE_COLORS[type]
-	normal_style.border_color = Unit.OWNER_COLORS[owner]
-	_apply_shop_button_shape(normal_style)
-	button.add_theme_stylebox_override("normal", normal_style)
-
-	var hover_style := StyleBoxFlat.new()
-	hover_style.bg_color = Unit.TYPE_COLORS[type].lightened(0.15)
-	hover_style.border_color = Unit.OWNER_COLORS[owner].lightened(0.15)
-	_apply_shop_button_shape(hover_style)
-	button.add_theme_stylebox_override("hover", hover_style)
-
-	var pressed_style := StyleBoxFlat.new()
-	pressed_style.bg_color = Unit.TYPE_COLORS[type].darkened(0.15)
-	pressed_style.border_color = Unit.OWNER_COLORS[owner]
-	_apply_shop_button_shape(pressed_style)
-	button.add_theme_stylebox_override("pressed", pressed_style)
-
-	var disabled_style := StyleBoxFlat.new()
-	disabled_style.bg_color = Unit.TYPE_COLORS[type].darkened(0.4)
-	disabled_style.border_color = Color(0.3, 0.3, 0.3)
-	_apply_shop_button_shape(disabled_style)
-	button.add_theme_stylebox_override("disabled", disabled_style)
+	_apply_shop_button_styles(button, type, unit_owner, is_selected)
 
 	button.add_theme_color_override("font_color", Color.WHITE)
 	button.add_theme_color_override("font_hover_color", Color.WHITE)
@@ -155,12 +154,52 @@ func _create_shop_button(type: Unit.UnitType, owner: Unit.Owner) -> Button:
 	return button
 
 
-func _apply_shop_button_shape(style: StyleBoxFlat) -> void:
-	style.border_width_bottom = SHOP_BUTTON_BORDER_WIDTH
-	style.border_width_top = SHOP_BUTTON_BORDER_WIDTH
-	style.border_width_left = SHOP_BUTTON_BORDER_WIDTH
-	style.border_width_right = SHOP_BUTTON_BORDER_WIDTH
-	style.corner_radius_top_left = SHOP_BUTTON_CORNER_RADIUS
-	style.corner_radius_top_right = SHOP_BUTTON_CORNER_RADIUS
-	style.corner_radius_bottom_left = SHOP_BUTTON_CORNER_RADIUS
-	style.corner_radius_bottom_right = SHOP_BUTTON_CORNER_RADIUS
+func _apply_shop_button_styles(
+	button: Button,
+	type: UnitData.UnitType,
+	unit_owner: UnitData.Owner,
+	is_selected: bool
+) -> void:
+	var border_width: int = SHOP_BUTTON_SELECTED_BORDER_WIDTH if is_selected else SHOP_BUTTON_BORDER_WIDTH
+	var border_color: Color = (
+		SHOP_BUTTON_SELECTED_BORDER_COLOR if is_selected else UnitData.OWNER_COLORS[unit_owner]
+	)
+
+	var normal_style: StyleBoxFlat = StyleUtils.create_flat_style(
+		UnitData.TYPE_COLORS[type],
+		border_color,
+		border_width,
+		SHOP_BUTTON_CORNER_RADIUS
+	)
+	button.add_theme_stylebox_override("normal", normal_style)
+
+	var hover_style: StyleBoxFlat = StyleUtils.create_flat_style(
+		UnitData.TYPE_COLORS[type].lightened(0.15),
+		border_color,
+		border_width,
+		SHOP_BUTTON_CORNER_RADIUS
+	)
+	button.add_theme_stylebox_override("hover", hover_style)
+
+	var pressed_style: StyleBoxFlat = StyleUtils.create_flat_style(
+		UnitData.TYPE_COLORS[type].darkened(0.15),
+		border_color,
+		border_width,
+		SHOP_BUTTON_CORNER_RADIUS
+	)
+	button.add_theme_stylebox_override("pressed", pressed_style)
+
+	var disabled_style: StyleBoxFlat = StyleUtils.create_flat_style(
+		UnitData.TYPE_COLORS[type].darkened(0.4),
+		Color(0.3, 0.3, 0.3),
+		border_width,
+		SHOP_BUTTON_CORNER_RADIUS
+	)
+	button.add_theme_stylebox_override("disabled", disabled_style)
+
+
+func _refresh_human_button_selection() -> void:
+	for type in _human_button_by_type:
+		var button: Button = _human_button_by_type[type]
+		var is_selected: bool = _has_human_selection and type == _selected_human_unit_type
+		_apply_shop_button_styles(button, type, UnitData.Owner.HUMAN, is_selected)

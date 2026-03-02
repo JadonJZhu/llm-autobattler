@@ -15,6 +15,7 @@ var _llm_shop: Shop
 var _human_shop: Shop
 var _game_is_over: bool = false
 var _instructions_menu: InstructionsMenu
+var _llm_fallback: LlmFallback = LlmFallback.new()
 
 
 func _ready() -> void:
@@ -26,6 +27,8 @@ func _ready() -> void:
 func _connect_signals() -> void:
 	turn_manager.phase_changed.connect(_on_phase_changed)
 	turn_manager.prep_turn_changed.connect(_on_prep_turn_changed)
+	turn_manager.human_unit_selected.connect(_on_human_unit_selected)
+	turn_manager.prep_placement_made.connect(_on_prep_placement_made)
 	turn_manager.battle_step_completed.connect(_on_battle_step_completed)
 	turn_manager.game_over.connect(_on_game_over)
 	turn_manager.status_updated.connect(_on_status_updated)
@@ -47,31 +50,30 @@ func _start_game() -> void:
 	turn_manager.initialize(game_board, _llm_shop, _human_shop)
 
 	shop_ui.setup(_llm_shop, _human_shop)
-	shop_ui.update_gold_labels(_llm_shop, _human_shop)
 	shop_ui.update_turn_label(turn_manager.get_current_phase_label())
-	var is_human_prep: bool = (
-		turn_manager.phase == TurnManager.GamePhase.PREP
-		and turn_manager.prep_turn == TurnManager.PrepTurn.HUMAN
-	)
-	shop_ui.update_human_shop_buttons(is_human_prep, _human_shop)
+	_refresh_shop_ui()
 	shop_ui.update_status("Game started! LLM places first.")
 
 	# LLM goes first — trigger immediately
 	_trigger_llm_turn()
 
 
-func _on_shop_button_pressed(type: Unit.UnitType) -> void:
+func _on_shop_button_pressed(type: UnitData.UnitType) -> void:
 	turn_manager.select_unit_for_placement(type)
+
+
+func _on_human_unit_selected(type: UnitData.UnitType) -> void:
+	shop_ui.set_selected_human_unit(type)
+
+
+func _on_prep_placement_made(unit_owner: UnitData.Owner, _unit_type: UnitData.UnitType, _pos: Vector2i) -> void:
+	if unit_owner == UnitData.Owner.HUMAN:
+		shop_ui.clear_human_selection()
 
 
 func _on_prep_turn_changed(turn: TurnManager.PrepTurn) -> void:
 	shop_ui.update_turn_label(turn_manager.get_current_phase_label())
-	shop_ui.update_gold_labels(_llm_shop, _human_shop)
-	var is_human_prep: bool = (
-		turn_manager.phase == TurnManager.GamePhase.PREP
-		and turn_manager.prep_turn == TurnManager.PrepTurn.HUMAN
-	)
-	shop_ui.update_human_shop_buttons(is_human_prep, _human_shop)
+	_refresh_shop_ui()
 
 	if turn == TurnManager.PrepTurn.LLM:
 		_trigger_llm_turn()
@@ -85,54 +87,42 @@ func _trigger_llm_turn() -> void:
 			turn_manager.turn_number, GameLogger.get_previous_game_replay()
 		)
 	else:
-		_simulate_llm_prep()
+		_apply_fallback_llm_prep()
 
 
-func _on_llm_prep_response_received(unit_type: Unit.UnitType, grid_pos: Vector2i) -> void:
+func _on_llm_prep_response_received(unit_type: UnitData.UnitType, grid_pos: Vector2i) -> void:
 	var success: bool = turn_manager.apply_llm_prep_placement(unit_type, grid_pos)
 	if not success:
 		push_warning("LLM placement failed for %s at %s. Falling back to random." % [
-			Unit.TYPE_LABELS[unit_type], str(grid_pos)
+			UnitData.TYPE_LABELS[unit_type], str(grid_pos)
 		])
-		_simulate_llm_prep()
+		_apply_fallback_llm_prep()
 		return
-	shop_ui.update_gold_labels(_llm_shop, _human_shop)
-	var is_human_prep: bool = (
-		turn_manager.phase == TurnManager.GamePhase.PREP
-		and turn_manager.prep_turn == TurnManager.PrepTurn.HUMAN
-	)
-	shop_ui.update_human_shop_buttons(is_human_prep, _human_shop)
+	_refresh_shop_ui()
 
 
 func _on_llm_request_failed(error_message: String) -> void:
 	push_error("LLM request failed: " + error_message)
 	shop_ui.update_status("LLM error. Using random placement.")
-	_simulate_llm_prep()
+	_apply_fallback_llm_prep()
 
 
-func _simulate_llm_prep() -> void:
-	# Pick a random affordable type from LLM shop
-	var affordable_types: Array[Unit.UnitType] = []
-	for type in _llm_shop.available_types:
-		if _llm_shop.can_afford(type):
-			affordable_types.append(type)
-
-	if affordable_types.is_empty():
+func _apply_fallback_llm_prep() -> void:
+	var fallback: Dictionary = _llm_fallback.pick_random_placement(game_board, _llm_shop)
+	if fallback.is_empty():
 		push_warning("LLM has no affordable units. Skipping.")
 		return
 
-	var chosen_type: Unit.UnitType = affordable_types[randi() % affordable_types.size()]
-
-	# Pick a random empty LLM cell
-	var empty_positions: Array[Vector2i] = game_board.get_empty_positions_for(Unit.Owner.LLM)
-	if empty_positions.is_empty():
-		push_warning("No empty LLM positions. Skipping.")
-		return
-
-	var chosen_pos: Vector2i = empty_positions[randi() % empty_positions.size()]
-	var success: bool = turn_manager.apply_llm_prep_placement(chosen_type, chosen_pos)
+	var success: bool = turn_manager.apply_llm_prep_placement(
+		fallback["unit_type"],
+		fallback["position"]
+	)
 	if not success:
 		push_warning("Random LLM placement failed.")
+	_refresh_shop_ui()
+
+
+func _refresh_shop_ui() -> void:
 	shop_ui.update_gold_labels(_llm_shop, _human_shop)
 	var is_human_prep: bool = (
 		turn_manager.phase == TurnManager.GamePhase.PREP
@@ -158,7 +148,7 @@ func _on_game_over(winner, score_data: Dictionary) -> void:
 	var winner_text: String
 	if winner == null:
 		winner_text = "It's a tie!"
-	elif winner == Unit.Owner.LLM:
+	elif winner == UnitData.Owner.LLM:
 		winner_text = "LLM wins!"
 	else:
 		winner_text = "Human wins!"

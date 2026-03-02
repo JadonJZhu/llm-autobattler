@@ -43,22 +43,18 @@ func _create_cell_buttons() -> void:
 			button.size = Vector2(GameBoard.CELL_SIZE, GameBoard.CELL_SIZE)
 			button.position = game_board.grid_to_world(pos)
 
-			var style := StyleBoxFlat.new()
-			style.bg_color = bg_color
-			style.border_width_bottom = CELL_BORDER_WIDTH
-			style.border_width_top = CELL_BORDER_WIDTH
-			style.border_width_left = CELL_BORDER_WIDTH
-			style.border_width_right = CELL_BORDER_WIDTH
-			style.border_color = border_color
+			var style: StyleBoxFlat = StyleUtils.create_flat_style(
+				bg_color,
+				border_color,
+				CELL_BORDER_WIDTH
+			)
 			button.add_theme_stylebox_override("normal", style)
 
-			var hover_style := StyleBoxFlat.new()
-			hover_style.bg_color = hover_bg_color
-			hover_style.border_width_bottom = CELL_BORDER_WIDTH
-			hover_style.border_width_top = CELL_BORDER_WIDTH
-			hover_style.border_width_left = CELL_BORDER_WIDTH
-			hover_style.border_width_right = CELL_BORDER_WIDTH
-			hover_style.border_color = border_color
+			var hover_style: StyleBoxFlat = StyleUtils.create_flat_style(
+				hover_bg_color,
+				border_color,
+				CELL_BORDER_WIDTH
+			)
 			button.add_theme_stylebox_override("hover", hover_style)
 
 			button.pressed.connect(_on_cell_button_pressed.bind(pos))

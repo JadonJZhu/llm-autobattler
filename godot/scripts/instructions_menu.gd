@@ -58,20 +58,20 @@ func _build_help_button() -> void:
 	_help_button.custom_minimum_size = HELP_BUTTON_SIZE
 	_help_button.position = Vector2(1230, 10)
 
-	var style := StyleBoxFlat.new()
-	style.bg_color = Color(0.25, 0.25, 0.3, 0.9)
-	style.corner_radius_top_left = 8
-	style.corner_radius_top_right = 8
-	style.corner_radius_bottom_left = 8
-	style.corner_radius_bottom_right = 8
+	var style: StyleBoxFlat = StyleUtils.create_flat_style(
+		Color(0.25, 0.25, 0.3, 0.9),
+		Color.TRANSPARENT,
+		0,
+		8
+	)
 	_help_button.add_theme_stylebox_override("normal", style)
 
-	var hover_style := StyleBoxFlat.new()
-	hover_style.bg_color = Color(0.35, 0.35, 0.45, 0.9)
-	hover_style.corner_radius_top_left = 8
-	hover_style.corner_radius_top_right = 8
-	hover_style.corner_radius_bottom_left = 8
-	hover_style.corner_radius_bottom_right = 8
+	var hover_style: StyleBoxFlat = StyleUtils.create_flat_style(
+		Color(0.35, 0.35, 0.45, 0.9),
+		Color.TRANSPARENT,
+		0,
+		8
+	)
 	_help_button.add_theme_stylebox_override("hover", hover_style)
 
 	_help_button.add_theme_font_size_override("font_size", 22)
@@ -102,17 +102,12 @@ func _build_panel() -> void:
 		(720.0 - PANEL_SIZE.y) / 2.0
 	)
 
-	var panel_style := StyleBoxFlat.new()
-	panel_style.bg_color = PANEL_COLOR
-	panel_style.border_color = PANEL_BORDER_COLOR
-	panel_style.border_width_top = PANEL_BORDER_WIDTH
-	panel_style.border_width_bottom = PANEL_BORDER_WIDTH
-	panel_style.border_width_left = PANEL_BORDER_WIDTH
-	panel_style.border_width_right = PANEL_BORDER_WIDTH
-	panel_style.corner_radius_top_left = PANEL_CORNER_RADIUS
-	panel_style.corner_radius_top_right = PANEL_CORNER_RADIUS
-	panel_style.corner_radius_bottom_left = PANEL_CORNER_RADIUS
-	panel_style.corner_radius_bottom_right = PANEL_CORNER_RADIUS
+	var panel_style: StyleBoxFlat = StyleUtils.create_flat_style(
+		PANEL_COLOR,
+		PANEL_BORDER_COLOR,
+		PANEL_BORDER_WIDTH,
+		PANEL_CORNER_RADIUS
+	)
 	panel_style.content_margin_top = 16
 	panel_style.content_margin_bottom = 16
 	panel_style.content_margin_left = 24
@@ -146,20 +141,20 @@ func _build_header(parent: VBoxContainer) -> void:
 	close_button.text = "X"
 	close_button.custom_minimum_size = Vector2(36, 36)
 
-	var close_style := StyleBoxFlat.new()
-	close_style.bg_color = Color(0.5, 0.2, 0.2, 0.8)
-	close_style.corner_radius_top_left = 6
-	close_style.corner_radius_top_right = 6
-	close_style.corner_radius_bottom_left = 6
-	close_style.corner_radius_bottom_right = 6
+	var close_style: StyleBoxFlat = StyleUtils.create_flat_style(
+		Color(0.5, 0.2, 0.2, 0.8),
+		Color.TRANSPARENT,
+		0,
+		6
+	)
 	close_button.add_theme_stylebox_override("normal", close_style)
 
-	var close_hover := StyleBoxFlat.new()
-	close_hover.bg_color = Color(0.7, 0.25, 0.25, 0.9)
-	close_hover.corner_radius_top_left = 6
-	close_hover.corner_radius_top_right = 6
-	close_hover.corner_radius_bottom_left = 6
-	close_hover.corner_radius_bottom_right = 6
+	var close_hover: StyleBoxFlat = StyleUtils.create_flat_style(
+		Color(0.7, 0.25, 0.25, 0.9),
+		Color.TRANSPARENT,
+		0,
+		6
+	)
 	close_button.add_theme_stylebox_override("hover", close_hover)
 
 	close_button.add_theme_color_override("font_color", Color.WHITE)
