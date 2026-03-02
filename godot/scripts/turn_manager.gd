@@ -14,7 +14,7 @@ signal prep_turn_changed(turn: PrepTurn)
 signal human_unit_selected(unit_type: Unit.UnitType)
 signal prep_placement_made(unit_owner: Unit.Owner, unit_type: Unit.UnitType, pos: Vector2i)
 signal battle_step_completed(step_result: Dictionary)
-signal game_over(winner)  # Unit.Owner or null for tie
+signal game_over(winner, score_data: Dictionary)  # Unit.Owner or null for tie
 signal status_updated(message: String)
 
 # --- Exports ---
@@ -183,6 +183,7 @@ func _start_battle() -> void:
 	battle_step_number = 0
 	_battle_snapshot = _board.get_snapshot()
 	_battle_active_owner = Unit.Owner.LLM  # LLM always goes first
+	GameLogger.record_battle_start(BoardSerializer.serialize_snapshot(_battle_snapshot))
 
 	status_updated.emit("Battle begins! LLM moves first.")
 	phase_changed.emit(phase)
@@ -209,7 +210,7 @@ func _on_battle_timer_timeout() -> void:
 	battle_step_completed.emit(step_result)
 
 	if step_result["is_finished"]:
-		_end_game(step_result["winner"])
+		_end_game(step_result)
 		return
 
 	# Toggle active owner
@@ -222,8 +223,9 @@ func _on_battle_timer_timeout() -> void:
 	_battle_timer.start()
 
 
-func _end_game(winner) -> void:
+func _end_game(step_result: Dictionary) -> void:
 	phase = GamePhase.GAME_OVER
+	var winner = step_result.get("winner", null)
 
 	var winner_label: String
 	if winner == null:
@@ -233,12 +235,35 @@ func _end_game(winner) -> void:
 	else:
 		winner_label = "Human"
 
-	GameLogger.log_game_result(winner_label, -1, -1, turn_number, battle_step_number)
+	var score_data: Dictionary = {
+		"llm_score": int(step_result.get("llm_score", 0)),
+		"human_score": int(step_result.get("human_score", 0)),
+		"llm_remaining": int(step_result.get("llm_remaining", 0)),
+		"human_remaining": int(step_result.get("human_remaining", 0)),
+		"llm_escaped": int(step_result.get("llm_escaped", 0)),
+		"human_escaped": int(step_result.get("human_escaped", 0)),
+	}
+
+	GameLogger.set_current_game_score_data(score_data)
+	GameLogger.finalize_game_replay(winner_label)
+	GameLogger.log_game_result(
+		winner_label,
+		-1,
+		-1,
+		turn_number,
+		battle_step_number
+	)
 	GameLogger.save_log()
 
-	status_updated.emit("Game Over! Winner: %s" % winner_label)
+	status_updated.emit(
+		"Game Over! %s | LLM %d (%d remaining + %d escaped) vs Human %d (%d remaining + %d escaped)" % [
+			winner_label,
+			score_data["llm_score"], score_data["llm_remaining"], score_data["llm_escaped"],
+			score_data["human_score"], score_data["human_remaining"], score_data["human_escaped"],
+		]
+	)
 	phase_changed.emit(phase)
-	game_over.emit(winner)
+	game_over.emit(winner, score_data)
 
 
 # --- Utility ---

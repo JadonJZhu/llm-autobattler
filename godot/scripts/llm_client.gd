@@ -33,7 +33,7 @@ func has_api_key() -> bool:
 
 
 func request_llm_prep(board: GameBoard, llm_shop: Shop, turn_number: int,
-		log_entries: Array[Dictionary]) -> void:
+		previous_game_replay: Dictionary) -> void:
 	if _is_requesting:
 		push_warning("LlmClient: Request already in progress.")
 		return
@@ -43,7 +43,7 @@ func request_llm_prep(board: GameBoard, llm_shop: Shop, turn_number: int,
 
 	_is_requesting = true
 	var system_prompt: String = _build_system_prompt()
-	var user_message: String = _build_user_message(board, llm_shop, turn_number, log_entries)
+	var user_message: String = _build_user_message(board, llm_shop, turn_number, previous_game_replay)
 	var request_body: Dictionary = _build_request_body(system_prompt, user_message)
 
 	var headers: PackedStringArray = PackedStringArray([
@@ -86,14 +86,18 @@ UNIT TYPES AND COSTS:
 
 BATTLE MECHANICS:
 - Your units face DOWN (toward higher rows). Human units face UP (toward lower rows).
-- Turn order: A units act first, then B, then C, then D. Within same type, earlier-placed units go first.
-- Units that advance past the opponent's edge are removed from the board.
-- Battle alternates: you go first, then human, repeat until one side has no units (that side loses) or neither can act (tie).
+- Turn order scan: A units are checked first, then B, then C, then D. Within same type, earlier-placed units are checked first.
+- If the highest-priority unit is blocked and cannot act, the scan continues to the next unit in priority order until one can act.
+- If no unit on that side can act, that side's step is skipped.
+- Units that advance past the opponent's edge ESCAPE and earn 1 point.
+- Battle alternates: you go first, then human, repeat until neither side can take any action.
+- Score is: units still on board + escaped units. Higher score wins. Equal scores are a tie.
 
 STRATEGY TIPS:
 - A units are strong direct attackers but predictable.
 - B and C units can attack diagonally, useful for flanking.
 - D units are expensive (2 gold) but can snipe the most threatening enemy anywhere on the board.
+- Escaping units is a valid way to score and can be better than chasing eliminations.
 - Consider what the human might place and position your units to counter.
 
 YOUR SHOP shows which unit types you can buy and your remaining gold.
@@ -107,7 +111,7 @@ The PLACE line must be the last non-empty line of your response."
 
 
 func _build_user_message(board: GameBoard, llm_shop: Shop, turn_number: int,
-		log_entries: Array[Dictionary]) -> String:
+		previous_game_replay: Dictionary) -> String:
 	var parts: PackedStringArray = PackedStringArray()
 
 	parts.append("=== PREP TURN %d ===" % turn_number)
@@ -118,13 +122,9 @@ func _build_user_message(board: GameBoard, llm_shop: Shop, turn_number: int,
 	parts.append("Your shop: %s" % llm_shop.get_purchase_summary())
 	parts.append("")
 
-	if not log_entries.is_empty():
-		parts.append("Placement history:")
-		var recent_entries: Array[Dictionary] = log_entries.slice(
-			maxi(0, log_entries.size() - 10), log_entries.size()
-		)
-		for entry: Dictionary in recent_entries:
-			parts.append(_format_log_entry(entry))
+	var replay_text: String = _format_game_replay(previous_game_replay)
+	if not replay_text.is_empty():
+		parts.append(replay_text)
 		parts.append("")
 
 	parts.append("Choose a unit to place on your side of the board (rows 0-1).")
@@ -132,17 +132,45 @@ func _build_user_message(board: GameBoard, llm_shop: Shop, turn_number: int,
 	return "\n".join(parts)
 
 
-func _format_log_entry(entry: Dictionary) -> String:
-	var phase: String = entry.get("phase", "")
-	if phase == "prep":
-		var actor: String = entry.get("actor", "unknown")
-		var unit_type: String = entry.get("unit_type", "?")
-		var pos: Dictionary = entry.get("position", {})
-		var gold: int = entry.get("gold_remaining", 0)
-		return "  %s placed %s at (%d, %d) | Gold: %d" % [
-			actor.capitalize(), unit_type, pos.get("row", 0), pos.get("col", 0), gold
-		]
-	return "  %s" % str(entry)
+func _format_game_replay(replay: Dictionary) -> String:
+	if replay.is_empty():
+		return ""
+
+	var parts: PackedStringArray = PackedStringArray()
+	parts.append("Previous game replay:")
+	parts.append("")
+
+	var start_board: String = replay.get("start_board", "")
+	if not start_board.is_empty():
+		parts.append("Start-of-battle board:")
+		parts.append(start_board)
+		parts.append("")
+
+	var battle_steps: Array = replay.get("battle_steps", [])
+	if not battle_steps.is_empty():
+		parts.append("Battle trace:")
+		for i in range(battle_steps.size()):
+			parts.append("  %d. %s" % [i + 1, battle_steps[i]])
+		parts.append("")
+
+	var outcome: String = replay.get("outcome", "")
+	var llm_score: int = int(replay.get("llm_score", -1))
+	var human_score: int = int(replay.get("human_score", -1))
+	var llm_remaining: int = int(replay.get("llm_remaining", -1))
+	var human_remaining: int = int(replay.get("human_remaining", -1))
+	var llm_escaped: int = int(replay.get("llm_escaped", -1))
+	var human_escaped: int = int(replay.get("human_escaped", -1))
+	if not outcome.is_empty():
+		parts.append("Outcome: %s wins" % outcome if outcome != "Tie" else "Outcome: Tie")
+	if llm_score >= 0 and human_score >= 0:
+		parts.append(
+			"Final score: LLM %d (%d remaining + %d escaped) vs Human %d (%d remaining + %d escaped)" % [
+				llm_score, max(llm_remaining, 0), max(llm_escaped, 0),
+				human_score, max(human_remaining, 0), max(human_escaped, 0),
+			]
+		)
+
+	return "\n".join(parts)
 
 
 func _build_request_body(system_prompt: String, user_message: String) -> Dictionary:

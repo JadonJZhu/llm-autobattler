@@ -52,9 +52,9 @@ var _label: Label
 
 # --- Public ---
 
-func setup(type: UnitType, unit_owner: Owner, pos: Vector2i, order: int) -> void:
+func setup(type: UnitType, owner_type: Owner, pos: Vector2i, order: int) -> void:
 	unit_type = type
-	self.unit_owner = unit_owner
+	unit_owner = owner_type
 	grid_position = pos
 	placement_order = order
 	_build_visuals()

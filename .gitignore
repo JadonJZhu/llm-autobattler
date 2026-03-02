@@ -16,3 +16,5 @@ api_key.txt
 godot/logs/
 
 *.txt
+
+.vscode

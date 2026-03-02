@@ -7,6 +7,11 @@ const LOG_DIRECTORY: String = "user://game_logs/"
 var _log_entries: Array[Dictionary] = []
 var _session_id: String = ""
 
+var _current_battle_start_board: String = ""
+var _current_battle_steps: Array[String] = []
+var _previous_game_replay: Dictionary = {}
+var _current_game_score_data: Dictionary = {}
+
 
 func _ready() -> void:
 	_session_id = _generate_session_id()
@@ -54,11 +59,18 @@ func log_prep_placement(turn_number: int, unit_owner: String, unit_type: String,
 
 
 func log_battle_step(step_number: int, active_owner: String, events: String) -> void:
+	var has_escape: bool = events.find("escaped off the board") != -1
 	log_turn(step_number, {
 		"phase": "battle",
 		"active_owner": active_owner,
 		"events": events,
+		"had_escape": has_escape,
 	})
+	_current_battle_steps.append(events)
+
+
+func set_current_game_score_data(score_data: Dictionary) -> void:
+	_current_game_score_data = score_data.duplicate()
 
 
 func log_game_result(winner: String, final_score: int = -1, total_turns: int = -1,
@@ -66,6 +78,12 @@ func log_game_result(winner: String, final_score: int = -1, total_turns: int = -
 	var entry: Dictionary = {
 		"event": "game_over",
 		"winner": winner,
+		"llm_score": int(_current_game_score_data.get("llm_score", 0)),
+		"human_score": int(_current_game_score_data.get("human_score", 0)),
+		"llm_remaining": int(_current_game_score_data.get("llm_remaining", 0)),
+		"human_remaining": int(_current_game_score_data.get("human_remaining", 0)),
+		"llm_escaped": int(_current_game_score_data.get("llm_escaped", 0)),
+		"human_escaped": int(_current_game_score_data.get("human_escaped", 0)),
 	}
 	if final_score >= 0:
 		entry["final_score"] = final_score
@@ -76,6 +94,32 @@ func log_game_result(winner: String, final_score: int = -1, total_turns: int = -
 	if total_battle_steps >= 0:
 		entry["total_battle_steps"] = total_battle_steps
 	log_turn(maxi(total_turns, total_battle_steps), entry)
+
+
+func record_battle_start(serialized_board: String) -> void:
+	_current_battle_start_board = serialized_board
+	_current_battle_steps.clear()
+
+
+func finalize_game_replay(outcome: String) -> void:
+	_previous_game_replay = {
+		"start_board": _current_battle_start_board,
+		"battle_steps": _current_battle_steps.duplicate(),
+		"outcome": outcome,
+		"llm_score": int(_current_game_score_data.get("llm_score", 0)),
+		"human_score": int(_current_game_score_data.get("human_score", 0)),
+		"llm_remaining": int(_current_game_score_data.get("llm_remaining", 0)),
+		"human_remaining": int(_current_game_score_data.get("human_remaining", 0)),
+		"llm_escaped": int(_current_game_score_data.get("llm_escaped", 0)),
+		"human_escaped": int(_current_game_score_data.get("human_escaped", 0)),
+	}
+	_current_battle_start_board = ""
+	_current_battle_steps.clear()
+	_current_game_score_data = {}
+
+
+func get_previous_game_replay() -> Dictionary:
+	return _previous_game_replay
 
 
 func save_log() -> void:

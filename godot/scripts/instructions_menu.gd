@@ -207,10 +207,13 @@ func _get_instructions_bbcode() -> String:
 • Units fight automatically — no input needed
 • Each side takes turns activating one unit at a time
 • Priority order: A → B → C → D (ties broken by placement order)
-• Units that advance past the opponent's edge are removed
+• If the highest-priority unit is blocked, the next unit in priority tries instead
+• Units that advance past the opponent's edge escape and earn 1 point
 
 [font_size=18][b]— WINNING —[/b][/font_size]
-• Eliminate all enemy units to win
-• If both sides are wiped out simultaneously, it's a tie
+• The battle ends when neither side can take any more actions
+• Your score = units remaining on the board + units that escaped
+• Highest score wins
+• Equal scores = tie
 
 [i]Press Esc or click the X to close this menu.[/i]"""

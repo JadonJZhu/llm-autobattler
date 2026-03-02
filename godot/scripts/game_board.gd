@@ -9,13 +9,13 @@ const ROWS: int = 4
 const COLS: int = 3
 const LLM_ROWS: Array[int] = [0, 1]
 const HUMAN_ROWS: Array[int] = [2, 3]
-const CELL_SIZE: int = 80
-const CELL_SPACING: int = 90
+const CELL_SIZE: int = 96
+const CELL_SPACING: int = 108
 
 var _units: Dictionary = {}  # Vector2i -> Unit
 var _placement_counter: int = 0
 
-@export var board_offset: Vector2 = Vector2(100, 60)
+@export var board_offset: Vector2 = Vector2(165, 150)
 
 
 func _ready() -> void:
@@ -37,6 +37,8 @@ func place_unit(type: Unit.UnitType, unit_owner: Unit.Owner, pos: Vector2i) -> b
 	var unit := Unit.new()
 	unit.setup(type, unit_owner, pos, _placement_counter)
 	unit.position = grid_to_world(pos)
+	var scale_factor: float = float(CELL_SIZE) / float(Unit.UNIT_SIZE)
+	unit.scale = Vector2(scale_factor, scale_factor)
 	_units[pos] = unit
 	_placement_counter += 1
 	add_child(unit)

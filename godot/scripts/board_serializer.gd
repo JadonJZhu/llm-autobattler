@@ -55,6 +55,14 @@ static func serialize_snapshot(snapshot: Dictionary) -> String:
 		lines.append("row %d  |%s|  %s" % [row, "|".join(cells), side_label])
 
 	lines.append("       +------+------+------+")
+	var score_summary: Dictionary = _compute_score_summary(snapshot)
+	lines.append("")
+	lines.append(
+		"Score Summary: LLM %d (%d remaining + %d escaped) | Human %d (%d remaining + %d escaped)" % [
+			score_summary["llm_score"], score_summary["llm_remaining"], score_summary["llm_escaped"],
+			score_summary["human_score"], score_summary["human_remaining"], score_summary["human_escaped"],
+		]
+	)
 	return "\n".join(lines)
 
 
@@ -62,6 +70,30 @@ static func _pad_cell(text: String) -> String:
 	# Each cell is 6 chars wide (including surrounding spaces)
 	var total_width: int = 6
 	var padding: int = total_width - text.length()
-	var left: int = padding / 2
+	var left: int = int(padding / 2.0)
 	var right: int = padding - left
 	return " ".repeat(left) + text + " ".repeat(right)
+
+
+static func _compute_score_summary(snapshot: Dictionary) -> Dictionary:
+	var llm_remaining: int = 0
+	var human_remaining: int = 0
+	for key in snapshot.keys():
+		if key is Vector2i:
+			var pos: Vector2i = key
+			var data: Dictionary = snapshot[pos]
+			if data.get("owner", Unit.Owner.LLM) == Unit.Owner.LLM:
+				llm_remaining += 1
+			else:
+				human_remaining += 1
+	var meta: Dictionary = snapshot.get("__meta", {})
+	var llm_escaped: int = int(meta.get("llm_escaped", 0))
+	var human_escaped: int = int(meta.get("human_escaped", 0))
+	return {
+		"llm_remaining": llm_remaining,
+		"human_remaining": human_remaining,
+		"llm_escaped": llm_escaped,
+		"human_escaped": human_escaped,
+		"llm_score": llm_remaining + llm_escaped,
+		"human_score": human_remaining + human_escaped,
+	}
