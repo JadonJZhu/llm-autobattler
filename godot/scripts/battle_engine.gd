@@ -311,19 +311,30 @@ func _check_terminal(snapshot: BattleSnapshot, units: Dictionary, result: Dictio
 	var human_can_act: bool = _pick_acting_unit(units, UnitData.Owner.HUMAN) != NO_UNIT
 	var both_empty: bool = llm_count == 0 and human_count == 0
 	var both_stuck: bool = not llm_can_act and not human_can_act
+	var one_side_eliminated: bool = (llm_count == 0) != (human_count == 0)
+
+	# Auto-score remaining units when the opposing side is fully eliminated
+	if one_side_eliminated:
+		if llm_count == 0:
+			snapshot.human_escaped += human_count
+			_clear_owner_units(units, UnitData.Owner.HUMAN)
+		else:
+			snapshot.llm_escaped += llm_count
+			_clear_owner_units(units, UnitData.Owner.LLM)
+
 	var llm_escaped: int = snapshot.llm_escaped
 	var human_escaped: int = snapshot.human_escaped
-	var llm_score: int = llm_count + llm_escaped
-	var human_score: int = human_count + human_escaped
+	var llm_score: int = llm_escaped if one_side_eliminated else llm_count + llm_escaped
+	var human_score: int = human_escaped if one_side_eliminated else human_count + human_escaped
 
-	result["llm_remaining"] = llm_count
-	result["human_remaining"] = human_count
+	result["llm_remaining"] = 0 if one_side_eliminated else llm_count
+	result["human_remaining"] = 0 if one_side_eliminated else human_count
 	result["llm_escaped"] = llm_escaped
 	result["human_escaped"] = human_escaped
 	result["llm_score"] = llm_score
 	result["human_score"] = human_score
 
-	if both_empty or both_stuck:
+	if both_empty or both_stuck or one_side_eliminated:
 		result["is_finished"] = true
 		if llm_score > human_score:
 			result["winner"] = UnitData.Owner.LLM
@@ -334,6 +345,15 @@ func _check_terminal(snapshot: BattleSnapshot, units: Dictionary, result: Dictio
 		else:
 			result["winner"] = null
 			result["event"] += " | Game over by stalemate. Tie on score %d-%d." % [llm_score, human_score]
+
+func _clear_owner_units(units: Dictionary, unit_owner: UnitData.Owner) -> void:
+	var to_remove: Array[Vector2i] = []
+	for cell_pos in units.keys():
+		if units[cell_pos]["owner"] == unit_owner:
+			to_remove.append(cell_pos)
+	for cell_pos in to_remove:
+		units.erase(cell_pos)
+
 
 func _increment_escaped(snapshot: BattleSnapshot, unit_owner: UnitData.Owner) -> void:
 	if unit_owner == UnitData.Owner.LLM:

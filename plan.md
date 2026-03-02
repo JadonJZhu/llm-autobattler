@@ -1,330 +1,325 @@
-# Implementation Plan: LLM Mode System Prerequisites
+# Testing Strategy Implementation Plan
 
-This plan covers the infrastructure needed before writing any mode-specific prompts.
-Three prerequisites: (1) multi-game history storage, (2) composable prompt builder with config,
-(3) LLM-vs-LLM experiment harness.
+## Prerequisites
 
----
+### Step 0: Install GUT Addon
 
-## Step 1: Create `LlmModeConfig` resource
+GUT is not yet installed in the project. Before any tests can run:
 
-**File:** `godot/scripts/llm_mode_config.gd`
+1. **Download GUT** via the Godot Asset Library (top center of Godot editor → search "GUT - Godot Unit Testing") or manually from GitHub.
+2. **Verify** `godot/addons/gut/` exists after installation.
+3. **Enable the plugin** in Project → Project Settings → Plugins → GUT → Enable.
+4. **Configure test directories** in the GUT panel settings (see Step 1 below).
 
-Create a pure data class (`RefCounted`) that holds the three boolean toggles:
+> **This is a manual Godot editor step.** The human engineer should perform the install and plugin activation.
 
-```gdscript
-class_name LlmModeConfig
-extends RefCounted
+### Step 1: Create Test Directory Structure
 
-var instructions_enabled: bool = true
-var examples_enabled: bool = false
-var reflection_enabled: bool = false
+```
+godot/
+  test/
+    unit/
+      test_battle_engine.gd
+      test_llm_response_parser.gd
+      test_shop.gd
+      test_board_serializer.gd
+      test_llm_prompt_builder.gd
 ```
 
-This config is passed into the prompt builder and referenced by the game controller.
-Each LLM player gets its own config instance (important for LLM-vs-LLM where sides differ).
+After creating the directories, configure GUT to scan `res://test/unit` in the GUT panel settings (GUT Panel → Settings → Test Directories).
+
+> **The directory creation can be done via script; the GUT panel config is a manual editor step.**
 
 ---
 
-## Step 2: Expand `GameLogger` to store multi-game history
-
-**File:** `godot/scripts/game_logger.gd`
-
-Currently `_previous_game_replay` stores only the last game's replay. We need a rolling
-history for all modes (reflection needs 5 games; all modes get history to learn from).
-
-Changes:
-- Add `_game_history: Array[Dictionary]` that accumulates every finalized replay.
-- Cap at `MAX_GAME_HISTORY = 20` entries (oldest dropped when exceeded).
-- In `finalize_game_replay()`: append the replay dict to `_game_history` in addition to
-  setting `_previous_game_replay` (keep backward compat for now).
-- Add `get_game_history(count: int = -1) -> Array[Dictionary]` that returns the last
-  `count` entries (or all if -1).
-- Add `get_game_count() -> int` returning `_game_history.size()`.
-- Add `clear_history() -> void` for resetting between experiment runs.
-
-No existing callers break — `get_previous_game_replay()` still works as before.
+## Tier 1: Highest Impact, Lowest Cost
 
 ---
 
-## Step 3: Refactor `LlmPromptBuilder` into composable sections
+### Test 1: `BattleEngine` + `BattleSnapshot`
 
-**File:** `godot/scripts/llm_prompt_builder.gd`
+**File:** `godot/test/unit/test_battle_engine.gd`
 
-The current `build_system_prompt()` returns one monolithic string with full rules.
-Refactor it into section builders that compose based on `LlmModeConfig`.
+This is the highest-value test file. `BattleEngine` is pure `RefCounted` — instantiate with `.new()`, feed it hand-crafted `BattleSnapshot` objects, and assert deterministic outcomes.
 
-### 3a: Extract section methods
-
-Break the current system prompt into private methods:
-- `_build_api_section() -> String` — Grid dimensions, unit costs, PLACE format.
-  Always included. This is the minimal "how to interact" info.
-- `_build_rules_section() -> String` — Battle mechanics, turn order, scoring, escape rules.
-  Only included when `config.instructions_enabled == true`.
-- `_build_examples_section() -> String` — Three traced battle examples.
-  Only included when `config.examples_enabled == true`. (Content is a placeholder/stub
-  for now — actual examples are a later task.)
-- `_build_reflection_section(feedback: String) -> String` — Wraps the reflection helper's
-  feedback text into the prompt. Only included when `config.reflection_enabled == true`
-  and feedback is non-empty. (Stub for now.)
-- `_build_response_format() -> String` — The PLACE command format instructions.
-  Always included.
-
-### 3b: Update `build_system_prompt` signature
+#### Helper Setup
 
 ```gdscript
-func build_system_prompt(config: LlmModeConfig, reflection_feedback: String = "") -> String
+extends GutTest
+
+var engine: BattleEngine
+
+func before_each():
+    engine = BattleEngine.new()
+
+# Helper to build a BattleSnapshot from a dictionary of positions
+func _make_snapshot(unit_defs: Array[Dictionary]) -> BattleSnapshot:
+    var snap = BattleSnapshot.new()
+    for i in unit_defs.size():
+        var d = unit_defs[i]
+        snap.units[d.pos] = {
+            "unit_type": d.type,
+            "owner": d.owner,
+            "placement_order": d.get("placement_order", i)
+        }
+    return snap
 ```
 
-Composes sections in order: api → rules (if enabled) → examples (if enabled) →
-reflection feedback (if enabled and non-empty) → response format.
+#### Test Cases by Category
 
-### 3c: Update `build_user_message` signature
+**A. Unit Type A — Straight Attack & Advance**
+
+1. `test_a_attacks_enemy_directly_ahead` — Place LLM A at (0,1), Human unit at (1,1). Execute step for LLM. Assert the Human unit at (1,1) is removed and event_type is "attack".
+2. `test_a_advances_when_clear` — Place LLM A at (0,1), no unit at (1,1). Execute step. Assert A moved from (0,1) to (1,1), event_type is "advance".
+3. `test_a_blocked_when_friendly_ahead` — Place LLM A at (0,1) and another LLM unit at (1,1). Execute step. Assert A does NOT move, event_type is "blocked" or "pass".
+4. `test_a_escapes_off_board_edge` — Place LLM A at (3,1) (last row before escape). Advance it. Assert it escapes, `snap.llm_escaped` increments by 1, event_type is "escaped".
+5. `test_human_a_attacks_upward` — Place Human A at (3,1), LLM unit at (2,1). Execute step for HUMAN. Assert LLM unit removed. (Confirms direction is owner-dependent.)
+6. `test_human_a_escapes_off_top_edge` — Place Human A at (0,1), no enemies. Execute step. Assert it escapes, `snap.human_escaped` increments.
+
+**B. Unit Type B — Diagonal-Left Attack & Advance**
+
+7. `test_b_attacks_diag_left` — LLM B at (0,1), enemy at (1,0). Assert enemy removed.
+8. `test_b_advances_when_diag_clear` — LLM B at (0,1), no enemy at (1,0). Assert B advances forward (to (1,1)).
+9. `test_b_on_leftmost_col_cannot_attack` — LLM B at (0,0), enemy at (1,0) (directly ahead). Assert B does NOT attack — it has no diagonal-left target and cannot attack straight. B must advance instead.
+10. `test_b_on_leftmost_col_advances` — LLM B at (0,0), cell ahead clear. Assert B advances forward to (1,0).
+11. `test_b_on_leftmost_col_escapes` — LLM B at (3,0) (last row, leftmost col). Assert B escapes off the board edge, `snap.llm_escaped` increments.
+12. `test_human_b_diag_left_is_mirrored` — Human B at (3,1), enemy at (2,2). Confirm diagonal direction is owner-relative.
+
+**C. Unit Type C — Diagonal-Right Attack & Advance**
+
+11. `test_c_attacks_diag_right` — LLM C at (0,1), enemy at (1,2). Assert enemy removed.
+12. `test_c_advances_when_diag_clear` — LLM C at (0,1), no enemy at (1,2). Assert C advances forward.
+15. `test_c_on_rightmost_col_cannot_attack` — LLM C at (0,2), enemy at (1,2) (directly ahead). Assert C does NOT attack — it has no diagonal-right target and cannot attack straight. C must advance instead.
+16. `test_c_on_rightmost_col_advances` — LLM C at (0,2), cell ahead clear. Assert C advances forward to (1,2).
+17. `test_c_on_rightmost_col_escapes` — LLM C at (3,2) (last row, rightmost col). Assert C escapes off the board edge, `snap.llm_escaped` increments.
+18. `test_human_c_diag_right_is_mirrored` — Human C at (3,1), enemy at (2,0). Confirm direction mirroring.
+
+**D. Unit Type D — Ranged Manhattan Distance**
+
+19. `test_d_removes_closest_enemy_by_manhattan` — LLM D at (0,0), enemies at (2,0) (dist 2) and (3,2) (dist 5). Assert the closer enemy is removed.
+20. `test_d_tiebreak_left_to_right` — LLM D at (1,1), enemies at (2,0) (dist 2) and (2,2) (dist 2). Assert (2,0) is picked (leftmost column).
+21. `test_d_tiebreak_top_to_bottom` — LLM D at (1,1), enemies at (2,1) (dist 1) and (0,1) — wait, that's friendly. Use enemies at same manhattan distance but different rows, same column. Assert top-most (lower row index) is picked.
+22. `test_d_no_enemies_does_nothing` — LLM D alone on board. Assert event_type is "pass" or similar.
+23. `test_d_does_not_advance` — Confirm D stays in place after attacking (ranged unit).
+
+**E. Priority & Placement Order**
+
+24. `test_priority_a_before_b_before_c_before_d` — Place all four LLM unit types. Run one step. Assert the A unit acts first.
+25. `test_same_type_priority_by_placement_order` — Place two LLM A units with different `placement_order`. Assert the lower placement_order acts first.
+
+**F. Stalemate Detection**
+
+26. `test_stalemate_when_no_units_can_act` — Construct a board where all units are blocked (e.g., two columns of same-owner units facing each other with no attack targets). Assert `engine.is_stalemate(snap)` returns true.
+27. `test_not_stalemate_when_action_possible` — Normal board. Assert `is_stalemate()` returns false.
+
+**G. Winner Determination & Scoring**
+
+28. `test_winner_when_all_enemy_eliminated` — Run steps until one side has no units. Assert `is_finished` is true and `winner` is the surviving side.
+29. `test_score_includes_escaped_and_remaining` — Construct scenario where LLM has 1 unit on board + 1 escaped. Assert `llm_score == 2`.
+30. `test_empty_board_is_finished` — No units at all. Assert terminal state.
+
+**H. Full Battle Simulation**
+
+31. `test_full_battle_deterministic_replay` — Set up a specific board, run all steps to completion, record the sequence. Run again with identical setup. Assert identical step-by-step results. (Regression anchor test.)
+
+---
+
+### Test 2: `LlmResponseParser`
+
+**File:** `godot/test/unit/test_llm_response_parser.gd`
+
+Pure string → dictionary parsing. Use parameterized tests (GUT's `use_parameters`) for table-driven coverage.
+
+#### Setup
 
 ```gdscript
-func build_user_message(
-    board: GameBoard,
-    llm_shop: Shop,
-    turn_number: int,
-    game_history: Array[Dictionary],
-    config: LlmModeConfig
-) -> String
+extends GutTest
+
+var parser: LlmResponseParser
+
+func before_each():
+    parser = LlmResponseParser.new()
+    # Default valid_rows = [0, 1] (LLM rows)
 ```
 
-Changes:
-- Accept the full `game_history` array instead of a single replay dict.
-- Format all past games (using `format_game_replay` for each) instead of just the last one.
-- Include a game counter header so the LLM knows which game number it's on.
+#### Test Cases
 
-### 3d: Update `format_game_replay` (no signature change needed)
+**A. Valid Inputs**
 
-Prefix each replay with a game number label, e.g., "=== Game 3 Replay ===".
-Add parameter `game_number: int` to the method.
+1. `test_parse_valid_place_commands` — Parameterized test with:
+   - `"PLACE: A (0, 1)"` → `{ unit_type: UnitData.UnitType.A, position: Vector2i(0, 1) }`
+   - `"PLACE: B (1, 0)"` → B at (1,0)
+   - `"PLACE: C (0, 2)"` → C at (0,2)
+   - `"PLACE: D (1, 2)"` → D at (1,2)
 
----
+2. `test_parse_extracts_last_place_command` — Input has multiple PLACE lines; assert the **last** one is returned.
 
-## Step 4: Thread config through `LlmClient`
+3. `test_parse_ignores_preceding_text` — Input: `"I think I'll go with\nPLACE: A (0, 0)"`. Assert parses correctly.
 
-**File:** `godot/scripts/llm_client.gd`
+4. `test_parse_case_insensitive_type` — `"PLACE: a (0, 0)"` — verify if lowercase is accepted. (If not, this documents that behavior.)
 
-Changes:
-- Add `var _mode_config: LlmModeConfig` field, defaulting to a new instance.
-- Add `var _reflection_feedback: String = ""` field.
-- Add `set_mode_config(config: LlmModeConfig) -> void`.
-- Add `set_reflection_feedback(feedback: String) -> void`.
-- Update `request_llm_prep()` signature to accept `game_history: Array[Dictionary]`
-  instead of `previous_game_replay: Dictionary`.
-- Pass `_mode_config` and `_reflection_feedback` into the prompt builder calls.
+**B. Invalid / Malformed Inputs**
 
----
+5. `test_parse_empty_string_returns_empty` — `""` → `{}`
+6. `test_parse_no_place_keyword_returns_empty` — `"I want to put A at row 0 col 1"` → `{}`
+7. `test_parse_malformed_coords_returns_empty` — `"PLACE: A (abc, def)"` → `{}`
+8. `test_parse_missing_parens_returns_empty` — `"PLACE: A 0, 1"` → `{}`
+9. `test_parse_unknown_type_returns_empty` — `"PLACE: Z (0, 0)"` → `{}`
 
-## Step 5: Update `GameController` to use new signatures
+**C. Out-of-Bounds Validation**
 
-**File:** `godot/scripts/game_controller.gd`
+10. `test_parse_row_out_of_valid_rows` — `"PLACE: A (2, 0)"` with default valid_rows=[0,1] → `{}`
+11. `test_parse_col_out_of_bounds` — `"PLACE: A (0, 3)"` (COLS=3, so max col=2) → `{}`
+12. `test_parse_negative_coords` — `"PLACE: A (-1, 0)"` → `{}`
 
-Changes:
-- In `_trigger_llm_turn()`: pass `GameLogger.get_game_history()` instead of
-  `GameLogger.get_previous_game_replay()`.
-- Store a default `LlmModeConfig` on the controller; pass it to `LlmClient` at startup.
-- On restart (`_restart_game`), preserve the config across games (don't reset it).
+**D. Custom valid_rows**
 
-This step is purely mechanical — wire the new signatures without changing behavior.
-With `instructions_enabled = true` and other flags `false`, behavior matches current.
+13. `test_parse_with_human_valid_rows` — Set `parser.valid_rows = [2, 3]`. Assert `"PLACE: A (2, 1)"` succeeds and `"PLACE: A (0, 1)"` fails.
 
 ---
 
-## Step 6: Create `ReflectionClient`
+### Test 3: `Shop`
 
-**File:** `godot/scripts/reflection_client.gd`
+**File:** `godot/test/unit/test_shop.gd`
 
-A standalone class (extends `Node`) responsible for calling the Claude API to get
-reflection feedback. Separate from `LlmClient` to keep responsibilities distinct.
+#### Setup
 
-Design:
-- Owns its own `HTTPRequest` node.
-- `request_reflection(game_history: Array[Dictionary], llm_reasoning_log: Array[String]) -> void`
-  — sends the last 5 game replays + the LLM's reasoning from those games to Claude.
-- Signal: `reflection_response_received(feedback: String)`.
-- Signal: `reflection_request_failed(error: String)`.
-- Uses a smaller model (Haiku) or same model — configurable via constant.
-- Builds its own prompt (a simple system prompt telling it to analyze strategies and suggest improvements).
-- Stores the latest feedback text so it can be retrieved by the game controller.
-
-Does NOT need to be an autoload — owned by `GameController` as a child node.
-
-### 6a: Store LLM reasoning text
-
-Currently the LLM's reasoning (the full response text before the PLACE line) is printed
-to console but not stored. We need to capture and accumulate it.
-
-Changes to `LlmClient`:
-- Add signal `llm_reasoning_captured(reasoning_text: String)`.
-- In `_process_api_response`, extract the text before the PLACE line and emit it.
-
-Changes to `GameLogger`:
-- Add `_reasoning_history: Array[String]` to accumulate per-game reasoning texts.
-- Add `log_llm_reasoning(text: String) -> void`.
-- Add `get_recent_reasoning(count: int) -> Array[String]`.
-- Clear reasoning for the current game on `finalize_game_replay`.
-
-Changes to `GameController`:
-- Connect `LlmClient.llm_reasoning_captured` → `GameLogger.log_llm_reasoning`.
-
----
-
-## Step 7: Wire reflection into the game loop
-
-**File:** `godot/scripts/game_controller.gd`
-
-The reflection helper triggers every 5 completed games when `config.reflection_enabled`
-is true.
-
-Changes:
-- Add `var _reflection_client: ReflectionClient` as a child node (created in `_ready`).
-- Add `var _games_since_reflection: int = 0` counter.
-- In `_on_game_over` (or `_restart_game`): increment the counter. If it reaches 5 and
-  reflection is enabled, call `_reflection_client.request_reflection(...)` with the last
-  5 game replays and reasoning.
-- Connect `reflection_response_received` → store the feedback string on `LlmClient`
-  via `set_reflection_feedback()`. Reset the counter to 0.
-- If the reflection request fails, log a warning and continue without new feedback.
-- The reflection call happens **between games** (during the restart flow), so we need to
-  delay `_start_game()` until the reflection response arrives. Add a flag
-  `_awaiting_reflection: bool` and gate `_restart_game` on it. Show a
-  "Reflection helper is analyzing..." status message while waiting.
-
----
-
-## Step 8: Add UI toggles for the three modes
-
-**File:** `godot/scripts/main_ui.gd`
-
-Add three `CheckButton` nodes below the autoplay toggle:
-- "Instructions" (default: ON)
-- "Examples" (default: OFF)
-- "Reflection" (default: OFF)
-
-Design:
-- New signal: `mode_config_changed(config: LlmModeConfig)`.
-- Each CheckButton toggle updates a local `LlmModeConfig` and emits the signal.
-- Toggles are only interactive during prep phase (disable during battle to prevent
-  mid-game config changes) — or alternatively, only apply on next game restart.
-- Style consistently with the existing autoplay button.
-
-Changes to `GameController`:
-- Connect `main_ui.mode_config_changed` → `_on_mode_config_changed`.
-- `_on_mode_config_changed` updates `LlmClient.set_mode_config(config)`.
-
----
-
-## Step 9: Build the LLM-vs-LLM experiment harness
-
-### 9a: Create `LlmPlayerAdapter`
-
-**File:** `godot/scripts/llm_player_adapter.gd`
-
-A class that acts as an LLM-controlled "human side" player. It:
-- Has its own `LlmModeConfig`.
-- Has its own `LlmPromptBuilder` (mirrored for human-side perspective — rows 2-3).
-- Sends API requests and parses responses like `LlmClient`, but for the human side.
-- Emits `human_llm_response_received(unit_type, grid_pos)`.
-
-Key difference from `LlmClient`: the prompt tells this LLM it controls rows 2-3,
-and the response parser accepts rows 2-3 instead of 0-1.
-
-Approach: Parameterize `LlmResponseParser` to accept a configurable row range instead
-of hardcoding rows 0-1. Add `var valid_rows: Array[int] = [0, 1]` that can be set
-to `[2, 3]` for the human-side adapter.
-
-### 9b: Create `ExperimentRunner`
-
-**File:** `godot/scripts/experiment_runner.gd`
-
-Orchestrates automated LLM-vs-LLM game sequences.
-
-Design:
-- Extends `Node`, added as a child of the root scene (or a separate experiment scene).
-- Configuration:
-  - `llm_config: LlmModeConfig` — config for the LLM (top) side.
-  - `human_config: LlmModeConfig` — config for the human-side LLM.
-  - `games_per_trial: int = 30`
-  - `current_game: int = 0`
-- Flow:
-  1. Sets up both players' configs.
-  2. Calls `_start_game()` on GameController.
-  3. When it's "human's turn," instead of waiting for clicks, triggers the
-     `LlmPlayerAdapter` to make an API call.
-  4. On game over, logs results, increments counter, auto-restarts.
-  5. After `games_per_trial` games, emits `trial_completed(results: Dictionary)`.
-- Results dictionary: win counts, score differentials, average game length, per-game log.
-
-### 9c: Modify `TurnManager` for automated human turns
-
-Currently `TurnManager` waits for `cell_clicked` from the board for human turns.
-For LLM-vs-LLM, we need to programmatically trigger human placements.
-
-Add a method:
 ```gdscript
-func apply_human_prep_placement(type: UnitData.UnitType, pos: Vector2i) -> bool
+extends GutTest
+
+func _make_shop(types: Array[UnitData.UnitType], gold: int = 3) -> Shop:
+    var shop = Shop.new()
+    shop.available_types = types
+    shop.gold = gold
+    return shop
 ```
 
-This mirrors `apply_llm_prep_placement` but for the human side. It bypasses the
-click-select-place flow. The existing click flow remains for human-vs-LLM games.
+#### Test Cases
 
-### 9d: Wire `GameController` to support both modes
+**A. Purchase Logic**
 
-Add a flag `var experiment_mode: bool = false` to `GameController`.
+1. `test_purchase_deducts_gold` — Shop with [A, B, C], gold=3. Purchase A (cost 1). Assert gold == 2.
+2. `test_purchase_d_deducts_2_gold` — Shop with [D], gold=3. Purchase D. Assert gold == 1.
+3. `test_purchase_returns_true_on_success` — Assert `shop.purchase(UnitData.UnitType.A)` returns `true`.
+4. `test_purchase_when_broke_returns_false` — Gold=0, try purchase. Assert returns false, gold unchanged.
+5. `test_purchase_unavailable_type_returns_false` — Shop has [A, B], try purchasing C. Assert false.
 
-When `experiment_mode` is true:
-- On `_on_prep_turn_changed(PrepTurn.HUMAN)`: instead of waiting for clicks,
-  trigger `LlmPlayerAdapter.request_human_llm_prep(...)`.
-- Connect `LlmPlayerAdapter.human_llm_response_received` →
-  `turn_manager.apply_human_prep_placement(...)`.
-- On game over: auto-restart instead of waiting for click.
-- Disable human shop UI interaction.
+**B. can_afford**
 
-### 9e: Experiment logging
+6. `test_can_afford_with_sufficient_gold` — Gold=1, type A available. Assert true.
+7. `test_can_afford_with_insufficient_gold` — Gold=1, type D (cost 2) available. Assert false.
+8. `test_can_afford_with_missing_type` — Gold=3, type not in available_types. Assert false.
 
-Extend `GameLogger`:
-- Add `var _experiment_results: Array[Dictionary]` for aggregate stats.
-- Add `log_experiment_game(game_number: int, llm_config_label: String, human_config_label: String, outcome: Dictionary) -> void`.
-- Add `save_experiment_log(filename: String) -> void` — writes a summary CSV or JSON
-  with one row per game: game number, LLM config, human config, winner, scores, game length.
-- Add config label generation: `LlmModeConfig.get_label() -> String` returning something
-  like "I1_E0_R0" (instructions=on, examples=off, reflection=off).
+**C. can_afford_any**
+
+9. `test_can_afford_any_with_gold` — Gold=1, has [A]. Assert true.
+10. `test_can_afford_any_when_broke` — Gold=0. Assert false.
+11. `test_can_afford_any_only_d_with_1_gold` — Gold=1, only [D] available. Assert false (D costs 2).
+
+**D. Edge Cases**
+
+12. `test_starting_gold_is_3` — `Shop.new()`. Assert `shop.gold == 3`.
+13. `test_purchase_summary_format` — Verify `get_purchase_summary()` returns expected string format.
+
+---
+
+### Test 4: `BoardSerializer`
+
+**File:** `godot/test/unit/test_board_serializer.gd`
+
+Test `serialize_snapshot()` — static method, takes a Dictionary, returns ASCII String.
+
+#### Setup
+
+```gdscript
+extends GutTest
+```
+
+#### Test Cases
+
+1. `test_empty_board_serialization` — Empty dictionary. Assert output is a valid 4x3 grid with all cells showing `"."` or equivalent empty marker.
+2. `test_single_llm_unit` — `{ Vector2i(0, 1): { "unit_type": UnitData.UnitType.A, "owner": UnitData.Owner.LLM } }`. Assert cell (0,1) shows `"LA"` (LLM prefix + type).
+3. `test_single_human_unit` — Human B at (3, 0). Assert shows `"HB"`.
+4. `test_full_board_snapshot` — Place units in multiple cells. Assert the complete ASCII output matches expected string.
+5. `test_meta_score_summary` — Include `"__meta"` key with `{ "llm_escaped": 1, "human_escaped": 2 }`. Assert score summary line appears in output.
+6. `test_snapshot_without_meta` — No `"__meta"` key. Assert no score summary line (or empty summary).
+
+---
+
+## Tier 2: Moderate Impact, Moderate Cost
+
+---
+
+### Test 5: `LlmPromptBuilder`
+
+**File:** `godot/test/unit/test_llm_prompt_builder.gd`
+
+Only the scene-free methods are testable without mocking.
+
+#### Setup
+
+```gdscript
+extends GutTest
+
+var builder: LlmPromptBuilder
+
+func before_each():
+    builder = LlmPromptBuilder.new()
+```
+
+#### Test Cases
+
+**A. `build_system_prompt`** (requires `LlmModeConfig`, which is also `RefCounted`)
+
+1. `test_system_prompt_always_includes_api_and_format` — Config with all flags false. Assert output contains response format section and API section.
+2. `test_system_prompt_with_instructions_enabled` — `config.instructions_enabled = true`. Assert output contains rules/instructions content.
+3. `test_system_prompt_with_examples_enabled` — `config.examples_enabled = true`. Assert output contains examples section.
+4. `test_system_prompt_with_reflection_enabled_and_feedback` — `config.reflection_enabled = true`, pass feedback string. Assert output contains the feedback.
+5. `test_system_prompt_reflection_enabled_but_empty_feedback` — Reflection on, empty string. Assert no reflection section appears.
+
+**B. `format_game_replay`**
+
+6. `test_format_game_replay_basic` — Provide a replay dict with `start_board`, `battle_steps` (array of step descriptions), `outcome` string, `llm_score`, `human_score`. Assert output contains all components.
+7. `test_format_game_replay_with_game_number` — Pass `game_number = 3`. Assert "Game 3" (or similar label) appears in output.
+8. `test_format_game_replay_empty_battle_steps` — Empty `battle_steps` array. Assert no crash, output still valid.
 
 ---
 
 ## Implementation Order
 
-Execute steps in this order to minimize broken intermediate states:
+Execute in this exact order to maximize early value:
 
-1. **Step 1** — `LlmModeConfig` (pure data, no dependencies)
-2. **Step 2** — `GameLogger` multi-game history (additive, no breakage)
-3. **Step 3** — Refactor `LlmPromptBuilder` (composable sections)
-4. **Step 4** — Thread config through `LlmClient`
-5. **Step 5** — Update `GameController` wiring (restore working state)
-6. **Step 6** — `ReflectionClient` + reasoning capture
-7. **Step 7** — Wire reflection into game loop
-8. **Step 8** — UI toggles
-9. **Step 9a-9e** — LLM-vs-LLM experiment harness (can be done in parallel with 6-8)
-
-Steps 1-5 are the **critical path** — after those, the system works identically to today
-but with the infrastructure ready for mode prompts.
-
-Steps 6-7 (reflection) and Step 8 (UI) are independent of each other and can be
-parallelized.
-
-Step 9 (experiment harness) is the largest chunk but is mostly additive new code.
+| Step | Action | Details |
+|------|--------|---------|
+| 0 | Install GUT | Human engineer: install via Asset Library, enable plugin |
+| 1 | Create directory structure | Create `godot/test/unit/` |
+| 2 | Configure GUT | Human engineer: set test dir to `res://test/unit` in GUT panel |
+| 3 | Write `test_battle_engine.gd` | **Highest priority** — 27 test cases covering all unit types, priority, stalemate, scoring, determinism |
+| 4 | Run & verify battle tests | Fix any test failures, ensure all green |
+| 5 | Write `test_llm_response_parser.gd` | 13 parameterized test cases |
+| 6 | Run & verify parser tests | |
+| 7 | Write `test_shop.gd` | 13 test cases |
+| 8 | Run & verify shop tests | |
+| 9 | Write `test_board_serializer.gd` | 6 test cases |
+| 10 | Run & verify serializer tests | |
+| 11 | Write `test_llm_prompt_builder.gd` | 8 test cases |
+| 12 | Run & verify prompt builder tests | |
+| 13 | Full regression run | Run all tests via GUT "Run All" or command line |
 
 ---
 
-## What This Plan Does NOT Cover (deferred)
+## Running Tests
 
-- Writing the actual prompt content for each mode (instructions text, example traces,
-  reflection helper system prompt)
-- Running the full 8-mode experiment
-- Statistical analysis tooling
-- Cost optimization (Haiku for validation runs, context truncation)
-- Shop seed fixing for controlled experiments
-   
+Tests can be run three ways:
+1. **GUT Panel** in Godot editor — click "Run All"
+2. **Command line** — `godot --headless -s addons/gut/gut_cmdln.gd` (see `gut-docs/command-line.md` for flags)
+3. **VSCode** — via the GUT VSCode extension
+
+---
+
+## Notes & Open Questions
+
+- **B/C edge behavior on boundary columns**: Tests 9, 10, 13, 14 depend on reading `_act_b` and `_act_c` to confirm exact edge-column behavior. The plan assumes "attacks straight ahead" on boundary but should be verified against source.
+- **D tie-breaking**: Tests 16–17 assume left-to-right then top-to-bottom from the CLAUDE.md spec. Verify against `_find_closest_enemy` implementation.
+- **Parameterized test syntax**: GUT supports `use_parameters()` for table-driven tests (see `gut-docs/parameterized-tests.md`). Use this for parser tests to keep them DRY.
+- **No mocking needed**: All Tier 1 and Tier 2 tests target pure `RefCounted` classes. No doubles, stubs, or scene tree required.

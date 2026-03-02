@@ -20,6 +20,7 @@ config/features=PackedStringArray("4.6")
 
 [autoload]
 
+Logger="*res://scripts/game_logger.gd"
 GameLogger="*res://scripts/game_logger.gd"
 LlmClient="*res://scripts/llm_client.gd"
 
@@ -28,6 +29,10 @@ LlmClient="*res://scripts/llm_client.gd"
 window/size/viewport_width=1280
 window/size/viewport_height=720
 window/stretch/mode="canvas_items"
+
+[editor_plugins]
+
+enabled=PackedStringArray("res://addons/gut/plugin.cfg")
 
 [rendering]
 
