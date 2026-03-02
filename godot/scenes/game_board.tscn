@@ -5,6 +5,7 @@
 [ext_resource type="Script" uid="uid://ngqustr4h5y" path="res://scripts/turn_manager.gd" id="3_cmh4g"]
 [ext_resource type="Script" uid="uid://cevljt1j1jvwy" path="res://scripts/board_ui.gd" id="3_mq2xb"]
 [ext_resource type="Script" uid="uid://ct1ri8l1vwcqh" path="res://scripts/shop_ui.gd" id="5_cmh4g"]
+[ext_resource type="Script" uid="uid://b830kwupceo6u" path="res://scripts/main_ui.gd" id="6_main"]
 
 [node name="GameController" type="Node2D" unique_id=1018729843]
 script = ExtResource("1_0jtfi")
@@ -27,3 +28,8 @@ anchors_preset = 0
 offset_right = 40.0
 offset_bottom = 40.0
 script = ExtResource("5_cmh4g")
+
+[node name="MainUI" type="Control" parent="UI" unique_id=527784990]
+layout_mode = 3
+anchors_preset = 0
+script = ExtResource("6_main")

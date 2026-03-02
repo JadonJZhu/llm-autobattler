@@ -3,6 +3,7 @@ extends Node
 ## Writes JSON logs to user://game_logs/.
 
 const LOG_DIRECTORY: String = "user://game_logs/"
+const MAX_GAME_HISTORY: int = 20
 
 var _log_entries: Array[Dictionary] = []
 var _session_id: String = ""
@@ -11,6 +12,9 @@ var _current_battle_start_board: String = ""
 var _current_battle_steps: Array[String] = []
 var _previous_game_replay: Dictionary = {}
 var _current_game_score_data: Dictionary = {}
+var _game_history: Array[Dictionary] = []
+var _reasoning_history: Array[String] = []
+var _current_game_reasoning: Array[String] = []
 
 
 func _ready() -> void:
@@ -94,6 +98,17 @@ func finalize_game_replay(outcome: String) -> void:
 		"llm_escaped": int(_current_game_score_data.get("llm_escaped", 0)),
 		"human_escaped": int(_current_game_score_data.get("human_escaped", 0)),
 	}
+
+	# Append to rolling game history
+	_game_history.append(_previous_game_replay.duplicate())
+	if _game_history.size() > MAX_GAME_HISTORY:
+		_game_history.pop_front()
+
+	# Store accumulated reasoning for this game and reset
+	if not _current_game_reasoning.is_empty():
+		_reasoning_history.append("\n".join(_current_game_reasoning))
+	_current_game_reasoning.clear()
+
 	_current_battle_start_board = ""
 	_current_battle_steps.clear()
 	_current_game_score_data = {}
@@ -101,6 +116,65 @@ func finalize_game_replay(outcome: String) -> void:
 
 func get_previous_game_replay() -> Dictionary:
 	return _previous_game_replay
+
+
+func get_game_history(count: int = -1) -> Array[Dictionary]:
+	if count < 0 or count >= _game_history.size():
+		return _game_history.duplicate()
+	return _game_history.slice(_game_history.size() - count) as Array[Dictionary]
+
+
+func get_game_count() -> int:
+	return _game_history.size()
+
+
+func clear_history() -> void:
+	_game_history.clear()
+	_reasoning_history.clear()
+	_current_game_reasoning.clear()
+	_previous_game_replay = {}
+
+
+func log_llm_reasoning(text: String) -> void:
+	_current_game_reasoning.append(text)
+
+
+func get_recent_reasoning(count: int = -1) -> Array[String]:
+	if count < 0 or count >= _reasoning_history.size():
+		return _reasoning_history.duplicate()
+	return _reasoning_history.slice(_reasoning_history.size() - count) as Array[String]
+
+
+var _experiment_results: Array[Dictionary] = []
+
+
+func log_experiment_game(game_number: int, llm_config_label: String,
+		human_config_label: String, outcome: Dictionary) -> void:
+	var entry: Dictionary = {
+		"game_number": game_number,
+		"llm_config": llm_config_label,
+		"human_config": human_config_label,
+		"winner": outcome.get("winner", "Unknown"),
+		"llm_score": int(outcome.get("llm_score", 0)),
+		"human_score": int(outcome.get("human_score", 0)),
+		"battle_steps": int(outcome.get("battle_steps", 0)),
+	}
+	_experiment_results.append(entry)
+
+
+func save_experiment_log(filename: String) -> void:
+	var file_path: String = LOG_DIRECTORY + filename
+	var file := FileAccess.open(file_path, FileAccess.WRITE)
+	if file == null:
+		push_error("GameLogger: Failed to open experiment log file: " + file_path)
+		return
+	file.store_string(JSON.stringify(_experiment_results, "\t"))
+	file.close()
+	print("GameLogger: Saved experiment log to " + file_path)
+
+
+func clear_experiment_results() -> void:
+	_experiment_results.clear()
 
 
 func save_log() -> void:

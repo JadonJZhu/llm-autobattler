@@ -14,6 +14,7 @@ signal prep_turn_changed(turn: PrepTurn)
 signal human_unit_selected(unit_type: UnitData.UnitType)
 signal prep_placement_made(unit_owner: UnitData.Owner, unit_type: UnitData.UnitType, pos: Vector2i)
 signal battle_step_completed(step_result: Dictionary)
+signal autoplay_toggled(is_autoplay: bool)
 signal game_over(winner, score_data: Dictionary)  # UnitData.Owner or null for tie
 signal status_updated(message: String)
 
@@ -27,6 +28,7 @@ var phase: GamePhase = GamePhase.PREP
 var prep_turn: PrepTurn = PrepTurn.LLM
 var turn_number: int = 0
 var battle_step_number: int = 0
+var autoplay_enabled: bool = true
 
 var _board: GameBoard
 var _llm_shop: Shop
@@ -67,6 +69,7 @@ func initialize(board: GameBoard, llm_shop: Shop, human_shop: Shop) -> void:
 
 	phase_changed.emit(phase)
 	prep_turn_changed.emit(prep_turn)
+	autoplay_toggled.emit(autoplay_enabled)
 
 
 # --- Prep Phase: Human ---
@@ -144,6 +147,36 @@ func apply_llm_prep_placement(type: UnitData.UnitType, pos: Vector2i) -> bool:
 	return true
 
 
+func apply_human_prep_placement(type: UnitData.UnitType, pos: Vector2i) -> bool:
+	if phase != GamePhase.PREP or prep_turn != PrepTurn.HUMAN:
+		return false
+	if not _board.is_position_valid_for(UnitData.Owner.HUMAN, pos):
+		push_error("TurnManager: Invalid human placement position: %s" % str(pos))
+		return false
+	if not _human_shop.can_afford(type):
+		push_error("TurnManager: Human cannot afford unit type: %s" % UnitData.TYPE_LABELS[type])
+		return false
+	if _board.get_snapshot().has(pos):
+		push_error("TurnManager: Cell already occupied at %s" % str(pos))
+		return false
+
+	_human_shop.purchase(type)
+	_board.place_unit(type, UnitData.Owner.HUMAN, pos)
+	turn_number += 1
+	_has_selection = false
+
+	var type_label: String = UnitData.TYPE_LABELS[type]
+	status_updated.emit("Human (LLM) placed %s at (%d, %d) | Gold: %d" % [
+		type_label, pos.x, pos.y, _human_shop.gold
+	])
+
+	GameLogger.log_prep_placement(turn_number, "human", type_label, pos, _human_shop.gold)
+	prep_placement_made.emit(UnitData.Owner.HUMAN, type, pos)
+
+	_check_prep_over()
+	return true
+
+
 func _check_prep_over() -> void:
 	var llm_can_buy: bool = _llm_shop.can_afford_any()
 	var human_can_buy: bool = _human_shop.can_afford_any()
@@ -178,6 +211,28 @@ func _check_prep_over() -> void:
 
 # --- Battle Phase ---
 
+func set_autoplay(enabled: bool) -> void:
+	if autoplay_enabled == enabled:
+		return
+	autoplay_enabled = enabled
+	autoplay_toggled.emit(autoplay_enabled)
+
+	if phase != GamePhase.BATTLE or not _battle_timer:
+		return
+
+	if autoplay_enabled:
+		if _battle_timer.is_stopped():
+			_battle_timer.start()
+	else:
+		_battle_timer.stop()
+
+
+func advance_manual_step() -> void:
+	if phase != GamePhase.BATTLE or autoplay_enabled:
+		return
+	_execute_battle_step()
+
+
 func _start_battle() -> void:
 	phase = GamePhase.BATTLE
 	battle_step_number = 0
@@ -190,11 +245,18 @@ func _start_battle() -> void:
 	status_updated.emit("Battle begins! LLM moves first.")
 	phase_changed.emit(phase)
 
-	# Start the first battle step after a delay
-	_battle_timer.start()
+	# In autoplay mode, start the first step after a delay.
+	if autoplay_enabled:
+		_battle_timer.start()
 
 
 func _on_battle_timer_timeout() -> void:
+	if phase != GamePhase.BATTLE or not autoplay_enabled:
+		return
+	_execute_battle_step()
+
+
+func _execute_battle_step() -> void:
 	if phase != GamePhase.BATTLE:
 		return
 
@@ -221,8 +283,9 @@ func _on_battle_timer_timeout() -> void:
 	else:
 		_battle_active_owner = UnitData.Owner.LLM
 
-	# Schedule next step
-	_battle_timer.start()
+	# Keep stepping only while autoplay is enabled.
+	if autoplay_enabled:
+		_battle_timer.start()
 
 
 func _end_game(step_result: Dictionary) -> void:

@@ -13,6 +13,9 @@ const SHOP_BUTTON_CORNER_RADIUS: int = 4
 const SHOP_BUTTON_BORDER_WIDTH: int = 0
 const SHOP_BUTTON_SELECTED_BORDER_WIDTH: int = 3
 const SHOP_BUTTON_SELECTED_BORDER_COLOR: Color = Color.WHITE
+const THINKING_STATUS_PREFIX: String = "LLM is thinking"
+const THINKING_DOT_INTERVAL_SECONDS: float = 0.35
+const THINKING_MAX_DOTS: int = 3
 
 var _llm_gold_label: Label
 var _llm_shop_container: HBoxContainer
@@ -25,6 +28,10 @@ var _llm_shop_buttons: Array[Button] = []
 var _human_button_by_type: Dictionary = {}  # UnitData.UnitType -> Button
 var _has_human_selection: bool = false
 var _selected_human_unit_type: UnitData.UnitType = UnitData.UnitType.A
+var _is_thinking_animation_active: bool = false
+var _thinking_dot_count: int = 0
+var _thinking_elapsed_seconds: float = 0.0
+var _thinking_base_text: String = THINKING_STATUS_PREFIX
 
 
 func _ready() -> void:
@@ -48,6 +55,10 @@ func update_turn_label(text: String) -> void:
 
 
 func update_status(text: String) -> void:
+	if _is_thinking_status(text):
+		_start_thinking_animation(text)
+		return
+	_stop_thinking_animation()
 	_status_label.text = text
 
 
@@ -89,7 +100,7 @@ func _build_layout() -> void:
 	_turn_label = _create_label(Vector2(UI_X_OFFSET, 250.0), LABEL_FONT_SIZE)
 	add_child(_turn_label)
 
-	_status_label = _create_label(Vector2(UI_X_OFFSET, 290.0), 0)
+	_status_label = _create_label(Vector2(UI_X_OFFSET, 285.0), 0)
 	_status_label.custom_minimum_size = Vector2(560.0, 60.0)
 	_status_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	add_child(_status_label)
@@ -203,3 +214,42 @@ func _refresh_human_button_selection() -> void:
 		var button: Button = _human_button_by_type[type]
 		var is_selected: bool = _has_human_selection and type == _selected_human_unit_type
 		_apply_shop_button_styles(button, type, UnitData.Owner.HUMAN, is_selected)
+
+
+func _process(delta: float) -> void:
+	if not _is_thinking_animation_active:
+		return
+	_thinking_elapsed_seconds += delta
+	while _thinking_elapsed_seconds >= THINKING_DOT_INTERVAL_SECONDS:
+		_thinking_elapsed_seconds -= THINKING_DOT_INTERVAL_SECONDS
+		_thinking_dot_count = (_thinking_dot_count + 1) % (THINKING_MAX_DOTS + 1)
+		_update_thinking_status_label()
+
+
+func _is_thinking_status(text: String) -> bool:
+	return text.begins_with(THINKING_STATUS_PREFIX)
+
+
+func _start_thinking_animation(text: String) -> void:
+	if not _is_thinking_animation_active:
+		_thinking_dot_count = 0
+		_thinking_elapsed_seconds = 0.0
+	_thinking_base_text = _strip_trailing_periods(text)
+	_is_thinking_animation_active = true
+	_update_thinking_status_label()
+
+
+func _stop_thinking_animation() -> void:
+	_is_thinking_animation_active = false
+	_thinking_elapsed_seconds = 0.0
+
+
+func _update_thinking_status_label() -> void:
+	_status_label.text = "%s%s" % [_thinking_base_text, ".".repeat(_thinking_dot_count)]
+
+
+func _strip_trailing_periods(text: String) -> String:
+	var trimmed_text: String = text.strip_edges()
+	while trimmed_text.ends_with(".") and trimmed_text.length() > 0:
+		trimmed_text = trimmed_text.left(trimmed_text.length() - 1)
+	return trimmed_text

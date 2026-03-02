@@ -1,6 +1,9 @@
 class_name LlmResponseParser
 extends RefCounted
 
+var valid_rows: Array[int] = [0, 1]
+
+
 func parse_place_command(text: String) -> Dictionary:
 	var search_pattern: String = "PLACE:"
 	var last_index: int = text.rfind(search_pattern)
@@ -50,9 +53,9 @@ func parse_place_command(text: String) -> Dictionary:
 	var row: int = row_str.to_int()
 	var col: int = col_str.to_int()
 
-	# Validate LLM-side rows (0-1) and columns (0-2)
-	if row < 0 or row > 1:
-		push_error("LlmResponseParser: Row %d is not on LLM side (must be 0 or 1)." % row)
+	# Validate rows and columns
+	if row not in valid_rows:
+		push_error("LlmResponseParser: Row %d is not in valid rows %s." % [row, str(valid_rows)])
 		return {}
 	if col < 0 or col >= GridConstants.COLS:
 		push_error("LlmResponseParser: Column %d is out of range (must be 0-%d)." % [col, GridConstants.COLS - 1])

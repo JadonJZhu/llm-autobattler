@@ -4,6 +4,7 @@ extends Node
 
 signal llm_prep_response_received(unit_type: UnitData.UnitType, grid_pos: Vector2i)
 signal llm_request_failed(error_message: String)
+signal llm_reasoning_captured(reasoning_text: String)
 
 const API_ENDPOINT: String = "https://api.anthropic.com/v1/messages"
 const API_MODEL: String = "claude-opus-4-6"
@@ -17,6 +18,8 @@ var _http_request: HTTPRequest
 var _is_requesting: bool = false
 var _prompt_builder: LlmPromptBuilder = LlmPromptBuilder.new()
 var _response_parser: LlmResponseParser = LlmResponseParser.new()
+var _mode_config: LlmModeConfig = LlmModeConfig.new()
+var _reflection_feedback: String = ""
 
 
 func _ready() -> void:
@@ -31,8 +34,16 @@ func has_api_key() -> bool:
 	return not _api_key.is_empty()
 
 
+func set_mode_config(config: LlmModeConfig) -> void:
+	_mode_config = config
+
+
+func set_reflection_feedback(feedback: String) -> void:
+	_reflection_feedback = feedback
+
+
 func request_llm_prep(board: GameBoard, llm_shop: Shop, turn_number: int,
-		previous_game_replay: Dictionary) -> void:
+		game_history: Array[Dictionary]) -> void:
 	if _is_requesting:
 		push_warning("LlmClient: Request already in progress.")
 		return
@@ -41,12 +52,15 @@ func request_llm_prep(board: GameBoard, llm_shop: Shop, turn_number: int,
 		return
 
 	_is_requesting = true
-	var system_prompt: String = _prompt_builder.build_system_prompt()
+	var system_prompt: String = _prompt_builder.build_system_prompt(
+		_mode_config, _reflection_feedback
+	)
 	var user_message: String = _prompt_builder.build_user_message(
 		board,
 		llm_shop,
 		turn_number,
-		previous_game_replay
+		game_history,
+		_mode_config
 	)
 	var request_body: Dictionary = _build_request_body(system_prompt, user_message)
 
@@ -122,6 +136,16 @@ func _process_api_response(response: Dictionary) -> void:
 			response_text += block_dict.get("text", "")
 
 	print("LlmClient: Response text:\n" + response_text)
+
+	# Extract reasoning (everything before the PLACE line)
+	var place_index: int = response_text.rfind("PLACE:")
+	var reasoning_text: String = ""
+	if place_index > 0:
+		reasoning_text = response_text.left(place_index).strip_edges()
+	elif place_index == -1:
+		reasoning_text = response_text.strip_edges()
+	if not reasoning_text.is_empty():
+		llm_reasoning_captured.emit(reasoning_text)
 
 	var parse_result: Dictionary = _response_parser.parse_place_command(response_text)
 	if parse_result.is_empty():

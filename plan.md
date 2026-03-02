@@ -1,145 +1,330 @@
-# Plan: Update Battle Phase Scanning & Win Condition
+# Implementation Plan: LLM Mode System Prerequisites
 
-## Goal & Motivation
-
-Two core mechanics need to change:
-
-1. **Battle phase unit scanning should skip blocked units.** Currently, during battle phase, each side's units are scanned in priority order A > B > C > D (ties broken by placement order), and the first unit found attempts an action. However, if that unit is blocked (e.g., cannot attack and cannot advance because the cell ahead is occupied), the turn is wasted — no other unit gets a chance to act. The fix: continue scanning down the priority list until a unit that **can** take an action is found. Only if *no* unit on that side can act should the step be a no-op.
-
-2. **Win condition should be a score, not elimination.** Currently the game ends when one side's units are all removed, and that side loses. The new win condition: the game ends when **neither side can take any more actions** (true stalemate). The winner is determined by **score = units still on the board + units that escaped** (i.e., moved off the board via the opponent's edge). A unit that advances past the opponent's edge counts as an "escape" rather than simply being removed. Higher score wins; equal scores = tie.
-
-These changes affect battle logic, win condition evaluation, the instructions shown to the player, the LLM system prompt, and game logging/history.
+This plan covers the infrastructure needed before writing any mode-specific prompts.
+Three prerequisites: (1) multi-game history storage, (2) composable prompt builder with config,
+(3) LLM-vs-LLM experiment harness.
 
 ---
 
-## Step-by-Step Implementation
+## Step 1: Create `LlmModeConfig` resource
 
-### Step 1: Track escaped units in BattleEngine
+**File:** `godot/scripts/llm_mode_config.gd`
 
-**File:** `godot/scripts/battle_engine.gd`
+Create a pure data class (`RefCounted`) that holds the three boolean toggles:
 
-- Add two counters to the battle snapshot: `llm_escaped: int` and `human_escaped: int`, initialized to `0` when the snapshot is first created.
-- In `_try_advance()`: when a unit moves off the board (the existing `ahead.x < 0 or ahead.x >= ROWS` branch), increment the appropriate escape counter in the snapshot instead of just removing the unit silently. The unit is still removed from the board, but now it's counted.
-- Ensure the step result events include an `"escaped"` event string (e.g., `"A at (0,2) escaped off the board"`) so it can be logged and displayed.
+```gdscript
+class_name LlmModeConfig
+extends RefCounted
 
-### Step 2: Update `_pick_acting_unit` to skip blocked units
+var instructions_enabled: bool = true
+var examples_enabled: bool = false
+var reflection_enabled: bool = false
+```
 
-**File:** `godot/scripts/battle_engine.gd`
+This config is passed into the prompt builder and referenced by the game controller.
+Each LLM player gets its own config instance (important for LLM-vs-LLM where sides differ).
 
-- Currently `_pick_acting_unit()` returns the single highest-priority candidate. Change it to return a **list of candidates sorted by priority** (or iterate internally).
-- New logic in `execute_step()`: iterate through the sorted candidate list. For each candidate, **check if it can act** before committing:
-  - **Unit A:** Can act if the cell directly ahead has an enemy (attack) OR the cell directly ahead is empty (advance) OR the cell ahead is off-board (escape). Blocked only if ahead cell is occupied by a friendly unit or a same-side unit.
-  - **Unit B:** Can act if its diagonal-left-ahead cell has an enemy (attack), OR it can advance (ahead cell is empty or off-board). Blocked if diagonal target is empty/friendly AND ahead cell is occupied.
-  - **Unit C:** Same as B but diagonal-right-ahead.
-  - **Unit D:** Can act if there is any enemy on the board. Cannot move, so if no enemies exist, it cannot act.
-- The first unit in priority order that **can** act is selected. If none can act, the step is a no-op for that side.
-- Consider extracting a `_can_unit_act(snapshot, unit_pos, owner) -> bool` helper to keep this clean.
+---
 
-### Step 3: Update `_check_terminal` win condition
-
-**File:** `godot/scripts/battle_engine.gd`
-
-- Remove the current win condition logic (one side has 0 units = loss).
-- New terminal condition: the game ends when **both sides** have no unit that can act (i.e., `_pick_acting_unit` returns nothing for both LLM and HUMAN in sequence — a true double-stalemate).
-  - Note: also end if both sides literally have 0 units on the board.
-- When terminal, compute scores:
-  - `llm_score = llm_units_on_board + llm_escaped`
-  - `human_score = human_units_on_board + human_escaped`
-- Return the winner based on higher score, or `null` for a tie if scores are equal.
-- Include both scores in the result dictionary so they can be logged and displayed.
-
-### Step 4: Update stalemate detection
-
-**File:** `godot/scripts/battle_engine.gd`
-
-- The existing `is_stalemate()` function checks if neither side can pick an acting unit. With the new `_pick_acting_unit` that skips blocked units, this naturally aligns — if `_pick_acting_unit` returns no candidate for both sides, it's terminal.
-- Merge stalemate detection into the new `_check_terminal` logic so there's one unified end-of-game check. Stalemate is now just the normal way the game ends (not a special edge case).
-
-### Step 5: Update TurnManager to handle new end-game data
-
-**File:** `godot/scripts/turn_manager.gd`
-
-- Update `_end_game()` to accept and propagate scores (llm_score, human_score) alongside the winner.
-- Update the `game_over` signal to include scores.
-- When a side's `_pick_acting_unit` returns no candidate but the other side still can act, **skip that side's turn** rather than ending the game. The game only ends when neither side can act on consecutive checks.
-
-### Step 6: Update GameController end-game display
-
-**File:** `godot/scripts/game_controller.gd`
-
-- Update `_on_game_over()` (or equivalent handler) to display scores, not just winner.
-- Show something like: `"LLM: 3 pts (2 remaining + 1 escaped) — Human: 2 pts (1 remaining + 1 escaped)"`.
-- Update the status label text accordingly.
-
-### Step 7: Update GameLogger
+## Step 2: Expand `GameLogger` to store multi-game history
 
 **File:** `godot/scripts/game_logger.gd`
 
-- Update `log_game_result()` to include both scores, units remaining, and units escaped in the log entry.
-- Update `log_battle_step()` to capture escape events distinctly (so the replay can mention escapes).
-- Update `finalize_game_replay()` to include final scores in the outcome data, so the LLM receives score context in subsequent games.
-- Update `get_previous_game_replay()` return format to include score breakdown.
+Currently `_previous_game_replay` stores only the last game's replay. We need a rolling
+history for all modes (reflection needs 5 games; all modes get history to learn from).
 
-### Step 8: Update LLM system prompt
+Changes:
+- Add `_game_history: Array[Dictionary]` that accumulates every finalized replay.
+- Cap at `MAX_GAME_HISTORY = 20` entries (oldest dropped when exceeded).
+- In `finalize_game_replay()`: append the replay dict to `_game_history` in addition to
+  setting `_previous_game_replay` (keep backward compat for now).
+- Add `get_game_history(count: int = -1) -> Array[Dictionary]` that returns the last
+  `count` entries (or all if -1).
+- Add `get_game_count() -> int` returning `_game_history.size()`.
+- Add `clear_history() -> void` for resetting between experiment runs.
 
-**File:** `godot/scripts/llm_client.gd`
-
-- In `_build_system_prompt()`, update the rules section:
-  - **Battle mechanics:** Explain that if the highest-priority unit is blocked, the next unit in priority order attempts to act, and so on.
-  - **Escaping:** Clarify that a unit advancing past the opponent's edge counts as an "escape" and earns a point.
-  - **Win condition:** The game ends when neither side can take any actions. Winner is determined by `score = units on board + escaped units`. Higher score wins.
-  - **Strategy implications:** The LLM should consider that escaping units is a valid (and valuable) strategy, not just elimination.
-- In `_build_user_message()`, if a previous game replay is included, make sure the outcome section shows scores (not just "LLM"/"Human"/"Tie").
-
-### Step 9: Update player-facing instructions
-
-**File:** `godot/scripts/instructions_menu.gd`
-
-- Update the `BATTLE PHASE` section:
-  - Add: "If the highest-priority unit cannot act (blocked), the next unit in priority tries instead."
-  - Change: "Units that advance past opponent's edge are removed" → "Units that advance past opponent's edge **escape** and earn 1 point."
-- Update the `WINNING` section:
-  - Remove: "Eliminate all enemy units to win"
-  - Add: "The battle ends when neither side can take any more actions."
-  - Add: "Your score = units remaining on the board + units that escaped."
-  - Add: "Highest score wins. Equal scores = tie."
-
-### Step 10: Update BoardSerializer (if needed)
-
-**File:** `godot/scripts/board_serializer.gd`
-
-- If the serialized board state sent to the LLM includes any game-state summary (like remaining unit counts), update it to also show escaped counts and current scores.
-- If it's purely a grid representation, no changes needed here — the score context will come from the prompt and replay.
-
-### Step 11: Update GameBoard visual feedback (if applicable)
-
-**File:** `godot/scripts/game_board.gd`
-
-- In `apply_battle_step()`, if an escape event occurs, consider adding a brief visual indication (e.g., the unit slides off the edge before being removed) rather than just disappearing. This is optional/cosmetic but improves clarity.
-- Update any score display that `GameBoard` might own (or confirm this is handled by `GameController`/`ShopUI`).
-
-### Step 12: Testing & edge cases
-
-Verify the following scenarios work correctly:
-
-- **All units blocked on one side, not the other:** The blocked side's turn is skipped; the other side keeps acting. Game does not end until both are stuck.
-- **All units escape:** A side with 0 units on board but 3 escaped should score 3.
-- **Mixed outcome:** Side A has 1 unit on board + 2 escaped = 3 pts vs. Side B has 2 on board + 0 escaped = 2 pts → Side A wins.
-- **Mutual annihilation:** Both sides reach 0 units on board, 0 escaped = tie (score 0-0).
-- **D unit alone with no enemies:** D cannot act (no target), and cannot move. If it's the only unit left, that side is stuck. If the other side is also stuck, game ends. The D unit counts as 1 remaining.
-- **Unit scanning exhausts all candidates:** If every unit on a side is blocked (all paths occupied, no valid attacks), that side passes. Confirm the turn toggle still works correctly.
+No existing callers break — `get_previous_game_replay()` still works as before.
 
 ---
 
-## Files Modified (Summary)
+## Step 3: Refactor `LlmPromptBuilder` into composable sections
 
-| File | Changes |
-|------|---------|
-| `battle_engine.gd` | Escape tracking, skip-blocked-unit scanning, new win condition |
-| `turn_manager.gd` | Score propagation, skip-side-when-stuck logic |
-| `game_controller.gd` | Score display in end-game UI |
-| `game_logger.gd` | Log escapes, scores, updated replay format |
-| `llm_client.gd` | Updated system prompt and replay formatting |
-| `instructions_menu.gd` | Updated player-facing rules text |
-| `board_serializer.gd` | Possibly add score/escape context (if applicable) |
-| `game_board.gd` | Escape visual feedback (optional) |
+**File:** `godot/scripts/llm_prompt_builder.gd`
+
+The current `build_system_prompt()` returns one monolithic string with full rules.
+Refactor it into section builders that compose based on `LlmModeConfig`.
+
+### 3a: Extract section methods
+
+Break the current system prompt into private methods:
+- `_build_api_section() -> String` — Grid dimensions, unit costs, PLACE format.
+  Always included. This is the minimal "how to interact" info.
+- `_build_rules_section() -> String` — Battle mechanics, turn order, scoring, escape rules.
+  Only included when `config.instructions_enabled == true`.
+- `_build_examples_section() -> String` — Three traced battle examples.
+  Only included when `config.examples_enabled == true`. (Content is a placeholder/stub
+  for now — actual examples are a later task.)
+- `_build_reflection_section(feedback: String) -> String` — Wraps the reflection helper's
+  feedback text into the prompt. Only included when `config.reflection_enabled == true`
+  and feedback is non-empty. (Stub for now.)
+- `_build_response_format() -> String` — The PLACE command format instructions.
+  Always included.
+
+### 3b: Update `build_system_prompt` signature
+
+```gdscript
+func build_system_prompt(config: LlmModeConfig, reflection_feedback: String = "") -> String
+```
+
+Composes sections in order: api → rules (if enabled) → examples (if enabled) →
+reflection feedback (if enabled and non-empty) → response format.
+
+### 3c: Update `build_user_message` signature
+
+```gdscript
+func build_user_message(
+    board: GameBoard,
+    llm_shop: Shop,
+    turn_number: int,
+    game_history: Array[Dictionary],
+    config: LlmModeConfig
+) -> String
+```
+
+Changes:
+- Accept the full `game_history` array instead of a single replay dict.
+- Format all past games (using `format_game_replay` for each) instead of just the last one.
+- Include a game counter header so the LLM knows which game number it's on.
+
+### 3d: Update `format_game_replay` (no signature change needed)
+
+Prefix each replay with a game number label, e.g., "=== Game 3 Replay ===".
+Add parameter `game_number: int` to the method.
+
+---
+
+## Step 4: Thread config through `LlmClient`
+
+**File:** `godot/scripts/llm_client.gd`
+
+Changes:
+- Add `var _mode_config: LlmModeConfig` field, defaulting to a new instance.
+- Add `var _reflection_feedback: String = ""` field.
+- Add `set_mode_config(config: LlmModeConfig) -> void`.
+- Add `set_reflection_feedback(feedback: String) -> void`.
+- Update `request_llm_prep()` signature to accept `game_history: Array[Dictionary]`
+  instead of `previous_game_replay: Dictionary`.
+- Pass `_mode_config` and `_reflection_feedback` into the prompt builder calls.
+
+---
+
+## Step 5: Update `GameController` to use new signatures
+
+**File:** `godot/scripts/game_controller.gd`
+
+Changes:
+- In `_trigger_llm_turn()`: pass `GameLogger.get_game_history()` instead of
+  `GameLogger.get_previous_game_replay()`.
+- Store a default `LlmModeConfig` on the controller; pass it to `LlmClient` at startup.
+- On restart (`_restart_game`), preserve the config across games (don't reset it).
+
+This step is purely mechanical — wire the new signatures without changing behavior.
+With `instructions_enabled = true` and other flags `false`, behavior matches current.
+
+---
+
+## Step 6: Create `ReflectionClient`
+
+**File:** `godot/scripts/reflection_client.gd`
+
+A standalone class (extends `Node`) responsible for calling the Claude API to get
+reflection feedback. Separate from `LlmClient` to keep responsibilities distinct.
+
+Design:
+- Owns its own `HTTPRequest` node.
+- `request_reflection(game_history: Array[Dictionary], llm_reasoning_log: Array[String]) -> void`
+  — sends the last 5 game replays + the LLM's reasoning from those games to Claude.
+- Signal: `reflection_response_received(feedback: String)`.
+- Signal: `reflection_request_failed(error: String)`.
+- Uses a smaller model (Haiku) or same model — configurable via constant.
+- Builds its own prompt (a simple system prompt telling it to analyze strategies and suggest improvements).
+- Stores the latest feedback text so it can be retrieved by the game controller.
+
+Does NOT need to be an autoload — owned by `GameController` as a child node.
+
+### 6a: Store LLM reasoning text
+
+Currently the LLM's reasoning (the full response text before the PLACE line) is printed
+to console but not stored. We need to capture and accumulate it.
+
+Changes to `LlmClient`:
+- Add signal `llm_reasoning_captured(reasoning_text: String)`.
+- In `_process_api_response`, extract the text before the PLACE line and emit it.
+
+Changes to `GameLogger`:
+- Add `_reasoning_history: Array[String]` to accumulate per-game reasoning texts.
+- Add `log_llm_reasoning(text: String) -> void`.
+- Add `get_recent_reasoning(count: int) -> Array[String]`.
+- Clear reasoning for the current game on `finalize_game_replay`.
+
+Changes to `GameController`:
+- Connect `LlmClient.llm_reasoning_captured` → `GameLogger.log_llm_reasoning`.
+
+---
+
+## Step 7: Wire reflection into the game loop
+
+**File:** `godot/scripts/game_controller.gd`
+
+The reflection helper triggers every 5 completed games when `config.reflection_enabled`
+is true.
+
+Changes:
+- Add `var _reflection_client: ReflectionClient` as a child node (created in `_ready`).
+- Add `var _games_since_reflection: int = 0` counter.
+- In `_on_game_over` (or `_restart_game`): increment the counter. If it reaches 5 and
+  reflection is enabled, call `_reflection_client.request_reflection(...)` with the last
+  5 game replays and reasoning.
+- Connect `reflection_response_received` → store the feedback string on `LlmClient`
+  via `set_reflection_feedback()`. Reset the counter to 0.
+- If the reflection request fails, log a warning and continue without new feedback.
+- The reflection call happens **between games** (during the restart flow), so we need to
+  delay `_start_game()` until the reflection response arrives. Add a flag
+  `_awaiting_reflection: bool` and gate `_restart_game` on it. Show a
+  "Reflection helper is analyzing..." status message while waiting.
+
+---
+
+## Step 8: Add UI toggles for the three modes
+
+**File:** `godot/scripts/main_ui.gd`
+
+Add three `CheckButton` nodes below the autoplay toggle:
+- "Instructions" (default: ON)
+- "Examples" (default: OFF)
+- "Reflection" (default: OFF)
+
+Design:
+- New signal: `mode_config_changed(config: LlmModeConfig)`.
+- Each CheckButton toggle updates a local `LlmModeConfig` and emits the signal.
+- Toggles are only interactive during prep phase (disable during battle to prevent
+  mid-game config changes) — or alternatively, only apply on next game restart.
+- Style consistently with the existing autoplay button.
+
+Changes to `GameController`:
+- Connect `main_ui.mode_config_changed` → `_on_mode_config_changed`.
+- `_on_mode_config_changed` updates `LlmClient.set_mode_config(config)`.
+
+---
+
+## Step 9: Build the LLM-vs-LLM experiment harness
+
+### 9a: Create `LlmPlayerAdapter`
+
+**File:** `godot/scripts/llm_player_adapter.gd`
+
+A class that acts as an LLM-controlled "human side" player. It:
+- Has its own `LlmModeConfig`.
+- Has its own `LlmPromptBuilder` (mirrored for human-side perspective — rows 2-3).
+- Sends API requests and parses responses like `LlmClient`, but for the human side.
+- Emits `human_llm_response_received(unit_type, grid_pos)`.
+
+Key difference from `LlmClient`: the prompt tells this LLM it controls rows 2-3,
+and the response parser accepts rows 2-3 instead of 0-1.
+
+Approach: Parameterize `LlmResponseParser` to accept a configurable row range instead
+of hardcoding rows 0-1. Add `var valid_rows: Array[int] = [0, 1]` that can be set
+to `[2, 3]` for the human-side adapter.
+
+### 9b: Create `ExperimentRunner`
+
+**File:** `godot/scripts/experiment_runner.gd`
+
+Orchestrates automated LLM-vs-LLM game sequences.
+
+Design:
+- Extends `Node`, added as a child of the root scene (or a separate experiment scene).
+- Configuration:
+  - `llm_config: LlmModeConfig` — config for the LLM (top) side.
+  - `human_config: LlmModeConfig` — config for the human-side LLM.
+  - `games_per_trial: int = 30`
+  - `current_game: int = 0`
+- Flow:
+  1. Sets up both players' configs.
+  2. Calls `_start_game()` on GameController.
+  3. When it's "human's turn," instead of waiting for clicks, triggers the
+     `LlmPlayerAdapter` to make an API call.
+  4. On game over, logs results, increments counter, auto-restarts.
+  5. After `games_per_trial` games, emits `trial_completed(results: Dictionary)`.
+- Results dictionary: win counts, score differentials, average game length, per-game log.
+
+### 9c: Modify `TurnManager` for automated human turns
+
+Currently `TurnManager` waits for `cell_clicked` from the board for human turns.
+For LLM-vs-LLM, we need to programmatically trigger human placements.
+
+Add a method:
+```gdscript
+func apply_human_prep_placement(type: UnitData.UnitType, pos: Vector2i) -> bool
+```
+
+This mirrors `apply_llm_prep_placement` but for the human side. It bypasses the
+click-select-place flow. The existing click flow remains for human-vs-LLM games.
+
+### 9d: Wire `GameController` to support both modes
+
+Add a flag `var experiment_mode: bool = false` to `GameController`.
+
+When `experiment_mode` is true:
+- On `_on_prep_turn_changed(PrepTurn.HUMAN)`: instead of waiting for clicks,
+  trigger `LlmPlayerAdapter.request_human_llm_prep(...)`.
+- Connect `LlmPlayerAdapter.human_llm_response_received` →
+  `turn_manager.apply_human_prep_placement(...)`.
+- On game over: auto-restart instead of waiting for click.
+- Disable human shop UI interaction.
+
+### 9e: Experiment logging
+
+Extend `GameLogger`:
+- Add `var _experiment_results: Array[Dictionary]` for aggregate stats.
+- Add `log_experiment_game(game_number: int, llm_config_label: String, human_config_label: String, outcome: Dictionary) -> void`.
+- Add `save_experiment_log(filename: String) -> void` — writes a summary CSV or JSON
+  with one row per game: game number, LLM config, human config, winner, scores, game length.
+- Add config label generation: `LlmModeConfig.get_label() -> String` returning something
+  like "I1_E0_R0" (instructions=on, examples=off, reflection=off).
+
+---
+
+## Implementation Order
+
+Execute steps in this order to minimize broken intermediate states:
+
+1. **Step 1** — `LlmModeConfig` (pure data, no dependencies)
+2. **Step 2** — `GameLogger` multi-game history (additive, no breakage)
+3. **Step 3** — Refactor `LlmPromptBuilder` (composable sections)
+4. **Step 4** — Thread config through `LlmClient`
+5. **Step 5** — Update `GameController` wiring (restore working state)
+6. **Step 6** — `ReflectionClient` + reasoning capture
+7. **Step 7** — Wire reflection into game loop
+8. **Step 8** — UI toggles
+9. **Step 9a-9e** — LLM-vs-LLM experiment harness (can be done in parallel with 6-8)
+
+Steps 1-5 are the **critical path** — after those, the system works identically to today
+but with the infrastructure ready for mode prompts.
+
+Steps 6-7 (reflection) and Step 8 (UI) are independent of each other and can be
+parallelized.
+
+Step 9 (experiment harness) is the largest chunk but is mostly additive new code.
+
+---
+
+## What This Plan Does NOT Cover (deferred)
+
+- Writing the actual prompt content for each mode (instructions text, example traces,
+  reflection helper system prompt)
+- Running the full 8-mode experiment
+- Statistical analysis tooling
+- Cost optimization (Haiku for validation runs, context truncation)
+- Shop seed fixing for controlled experiments
+   
