@@ -3,7 +3,7 @@ extends LlmHttpBase
 ## Extends LlmHttpBase for shared HTTP infrastructure.
 
 signal llm_prep_response_received(unit_type: UnitData.UnitType, grid_pos: Vector2i)
-signal llm_request_failed(error_message: String)
+signal llm_request_failed(error_message: String, is_api_error: bool)
 signal llm_reasoning_captured(reasoning_text: String)
 
 var _prompt_builder: LlmPromptBuilder
@@ -42,7 +42,7 @@ func request_llm_prep(board: GameBoard, llm_shop: Shop, human_shop: Shop,
 		push_warning("LlmClient: Request already in progress.")
 		return
 	if not has_api_key():
-		llm_request_failed.emit("No API key loaded.")
+		llm_request_failed.emit("No API key loaded.", false)
 		return
 
 	_is_requesting = true
@@ -68,14 +68,14 @@ func _on_api_response_parsed(response_text: String) -> void:
 
 	var parse_result: Dictionary = _response_parser.parse_place_command(response_text)
 	if parse_result.is_empty():
-		llm_request_failed.emit("Failed to parse PLACE command from LLM response.")
+		llm_request_failed.emit("Failed to parse PLACE command from LLM response.", false)
 		return
 
 	llm_prep_response_received.emit(parse_result["unit_type"], parse_result["position"])
 
 
 func _on_request_error(error_message: String) -> void:
-	llm_request_failed.emit(error_message)
+	llm_request_failed.emit(error_message, true)
 
 
 func _get_client_name() -> String:

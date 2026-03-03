@@ -70,7 +70,7 @@ Choose a unit to place on your side of the board (rows 0-1).
 
 **Game history details:**
 
-- Supplied by `GameLogger.get_game_history()`, which keeps a rolling window of the last **20 completed games**.
+- Supplied by `GameLogger.get_game_history()`, which keeps a rolling window of the last **10 completed games**.
 - Each replay dictionary contains: `start_board` (ASCII grid string), `battle_steps` (array of event strings), `outcome` ("LLM" / "Human" / "Tie"), `llm_score`, `human_score`.
 - `format_game_replay` maps the stored `"Human"` outcome value to `"Opponent"` before inserting it into the prompt.
 - The board ASCII grid is produced by `BoardSerializer.serialize_snapshot` at battle-start time and stored verbatim in `GameLogger`.

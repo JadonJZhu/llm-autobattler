@@ -15,6 +15,8 @@ var _puzzles: Array = []
 var _results: Array[Dictionary] = []
 var _current_config_index: int = 0
 var _current_puzzle_index: int = 0
+var _terminated_early: bool = false
+var _termination_reason: String = ""
 
 
 func start(puzzles: Array, attempt_limit: int = 10, configs: Array = []) -> bool:
@@ -35,6 +37,8 @@ func start(puzzles: Array, attempt_limit: int = 10, configs: Array = []) -> bool
 	_results.clear()
 	_current_config_index = 0
 	_current_puzzle_index = 0
+	_terminated_early = false
+	_termination_reason = ""
 	max_attempts_per_puzzle = maxi(1, attempt_limit)
 	_is_running = true
 	_emit_current_request()
@@ -47,6 +51,15 @@ func stop() -> void:
 
 func is_running() -> bool:
 	return _is_running
+
+
+func terminate_with_failure(reason: String) -> void:
+	if not _is_running:
+		return
+	_is_running = false
+	_terminated_early = true
+	_termination_reason = reason
+	ablation_completed.emit(_build_final_results())
 
 
 func record_puzzle_summary(summary: Dictionary) -> void:
@@ -128,6 +141,8 @@ func _build_final_results() -> Dictionary:
 		"max_attempts_per_puzzle": max_attempts_per_puzzle,
 		"puzzle_count": _puzzles.size(),
 		"config_count": _configs.size(),
+		"terminated_early": _terminated_early,
+		"termination_reason": _termination_reason,
 		"results": _results.duplicate(true),
 		"by_config": aggregate_by_config,
 	}

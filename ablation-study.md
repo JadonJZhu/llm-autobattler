@@ -184,7 +184,10 @@ Because reflection feedback is forcibly cleared at each puzzle request, the refl
    - emits `attempt_started(...)`.
 4. Controller reacts to `attempt_started` by calling `_start_game()`.
 5. During prep:
-   - LLM moves through API/fallback.
+   - LLM requests use Claude API.
+   - API-layer request failures are retried (no random fallback) up to 5 consecutive errors.
+   - On the 5th consecutive API-layer failure, the ablation run terminates early and emits partial results.
+   - Non-API failures (e.g., unparseable `PLACE`) still use existing random fallback handling.
    - Opponent uses scripted queue (`consume_next_opponent_placement`).
 6. Battle auto-runs (`autoplay=true`) until game over.
 7. On game over, controller calls:
@@ -235,6 +238,8 @@ Top-level payload written by `PuzzleLogger`:
     "max_attempts_per_puzzle": 10,
     "puzzle_count": 9,
     "config_count": 8,
+    "terminated_early": false,
+    "termination_reason": "",
     "results": [ /* per puzzle summary entries */ ],
     "by_config": { /* aggregate metrics keyed by config label */ }
   }
@@ -254,6 +259,13 @@ Each entry comes from `PuzzleRunner._build_summary(...)`:
   - first successful attempt index, else `max_attempts`
 - `max_attempts: int`
 - `attempt_scores: Array[Dictionary]`
+
+Top-level run status fields:
+
+- `terminated_early: bool`
+  - `true` when the run stopped before processing all config/puzzle pairs.
+- `termination_reason: String`
+  - Human-readable failure reason (for example: consecutive API request failures).
 
 `attempt_scores[]` per attempt contains:
 
@@ -388,7 +400,7 @@ For current suite (`P=9`) and default `A=10`:
 
 2. **No RNG seed control in runner**
    - The runner itself does not expose seeded reproducibility controls.
-   - Determinism depends on battle/puzzle setup and any stochastic fallback paths.
+   - Determinism depends on battle/puzzle setup and any stochastic fallback paths from non-API failures.
 
 3. **No confidence intervals/stat tests in built-in output**
    - Output provides descriptive metrics only (`pass_rate`, mean attempts on solved).

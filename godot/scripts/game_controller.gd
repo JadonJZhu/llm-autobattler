@@ -16,6 +16,7 @@ extends Node2D
 const REFLECTION_GAME_INTERVAL: int = 2
 const REASONING_SUMMARY_MAX_CHARS: int = 275
 const DEFAULT_PUZZLE_PATH: String = "res://puzzles/puzzle_suite.json"
+const ABLATION_MAX_API_ERRORS: int = 5
 const PUZZLE_LOADER_SCRIPT = preload("res://scripts/puzzle_loader.gd")
 const PUZZLE_RUNNER_SCRIPT = preload("res://scripts/puzzle_runner.gd")
 const ABLATION_RUNNER_SCRIPT = preload("res://scripts/ablation_runner.gd")
@@ -38,6 +39,7 @@ var _puzzle_mode_enabled: bool = false
 var _mini_ablation_active: bool = false
 var _active_puzzle_scenario = null
 var _opponent_placements_queue: Array[Dictionary] = []
+var _ablation_api_error_count: int = 0
 
 
 func _ready() -> void:
@@ -149,6 +151,9 @@ func _trigger_llm_turn() -> void:
 
 
 func _on_llm_prep_response_received(unit_type: UnitData.UnitType, grid_pos: Vector2i) -> void:
+	if _is_ablation_running():
+		_ablation_api_error_count = 0
+
 	var success: bool = turn_manager.apply_llm_prep_placement(unit_type, grid_pos)
 	if not success:
 		push_warning("LLM placement failed for %s at %s. Falling back to random." % [
@@ -159,8 +164,31 @@ func _on_llm_prep_response_received(unit_type: UnitData.UnitType, grid_pos: Vect
 	_refresh_shop_ui()
 
 
-func _on_llm_request_failed(error_message: String) -> void:
+func _on_llm_request_failed(error_message: String, is_api_error: bool) -> void:
 	push_error("LLM request failed: " + error_message)
+	if _is_ablation_running() and is_api_error:
+		_ablation_api_error_count += 1
+		if _ablation_api_error_count >= ABLATION_MAX_API_ERRORS:
+			var failure_reason: String = (
+				"Ablation terminated after %d consecutive LLM API errors. Last error: %s"
+				% [ABLATION_MAX_API_ERRORS, error_message]
+			)
+			shop_ui.update_status(
+				"Ablation API error %d/%d. Terminating run." % [
+					_ablation_api_error_count, ABLATION_MAX_API_ERRORS
+				]
+			)
+			_terminate_ablation_due_to_api_failure(failure_reason)
+			return
+
+		shop_ui.update_status(
+			"LLM API error during ablation (%d/%d). Retrying..." % [
+				_ablation_api_error_count, ABLATION_MAX_API_ERRORS
+			]
+		)
+		_trigger_llm_turn()
+		return
+
 	shop_ui.update_status("LLM error. Using random placement.")
 	_apply_fallback_llm_prep()
 
@@ -422,6 +450,7 @@ func start_ablation(max_attempts_per_puzzle: int = 10,
 
 	_mini_ablation_active = false
 	_puzzle_mode_enabled = true
+	_ablation_api_error_count = 0
 	turn_manager.set_autoplay(true)
 	shop_ui.disable_all_shop_buttons()
 	var started: bool = _ablation_runner.start(puzzles, max_attempts_per_puzzle)
@@ -444,6 +473,7 @@ func start_mini_ablation(max_attempts_per_puzzle: int = 3,
 	var mini_configs: Array = _build_mini_mode_configs()
 	_mini_ablation_active = true
 	_puzzle_mode_enabled = true
+	_ablation_api_error_count = 0
 	turn_manager.set_autoplay(true)
 	shop_ui.disable_all_shop_buttons()
 	var started: bool = _ablation_runner.start(subset, max_attempts_per_puzzle, mini_configs)
@@ -455,6 +485,7 @@ func start_mini_ablation(max_attempts_per_puzzle: int = 3,
 func stop_ablation() -> void:
 	_puzzle_mode_enabled = false
 	_mini_ablation_active = false
+	_ablation_api_error_count = 0
 	if _ablation_runner != null:
 		_ablation_runner.stop()
 	if _puzzle_runner != null:
@@ -521,14 +552,30 @@ func _on_ablation_progress(config_label: String, puzzle_id: String,
 
 func _on_ablation_completed(results: Dictionary) -> void:
 	var is_mini_run: bool = _mini_ablation_active
+	var terminated_early: bool = bool(results.get("terminated_early", false))
+	var termination_reason: String = str(results.get("termination_reason", ""))
 	_puzzle_mode_enabled = false
 	_mini_ablation_active = false
+	_ablation_api_error_count = 0
+	if _ablation_runner != null:
+		_ablation_runner.stop()
+	if _puzzle_runner != null:
+		_puzzle_runner.stop()
+	_active_puzzle_scenario = null
+	_opponent_placements_queue.clear()
 	var filename_prefix: String = "mini_ablation" if is_mini_run else "ablation"
 	var run_label: String = "Mini ablation" if is_mini_run else "Ablation"
 	var log_path: String = _puzzle_logger.save_ablation_results(results, filename_prefix)
-	shop_ui.update_status(
-		"%s complete. Results saved to %s" % [run_label, log_path]
-	)
+	if terminated_early:
+		shop_ui.update_status(
+			"%s terminated early: %s. Partial results saved to %s" % [
+				run_label, termination_reason, log_path
+			]
+		)
+	else:
+		shop_ui.update_status(
+			"%s complete. Results saved to %s" % [run_label, log_path]
+		)
 
 
 func _build_mini_puzzle_subset(puzzles: Array) -> Array:
@@ -555,3 +602,14 @@ func _build_mini_mode_configs() -> Array:
 	full.reflection_enabled = true
 
 	return [baseline, full]
+
+
+func _is_ablation_running() -> bool:
+	return _ablation_runner != null and _ablation_runner.is_running()
+
+
+func _terminate_ablation_due_to_api_failure(reason: String) -> void:
+	if _puzzle_runner != null:
+		_puzzle_runner.stop()
+	if _ablation_runner != null and _ablation_runner.is_running():
+		_ablation_runner.terminate_with_failure(reason)

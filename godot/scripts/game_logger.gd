@@ -3,7 +3,7 @@ extends Node
 ## Writes JSON logs to user://game_logs/.
 
 const LOG_CONSTANTS = preload("res://scripts/log_constants.gd")
-const MAX_GAME_HISTORY: int = 20
+const MAX_GAME_HISTORY: int = 10
 
 var _log_entries: Array[Dictionary] = []
 var _session_id: String = ""
