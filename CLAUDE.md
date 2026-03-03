@@ -33,7 +33,7 @@ The project also supports a **Puzzle-Based Ablation Mode**: the opponent follows
 ```
 godot/
   project.godot
-  api_key.txt              — Claude API key (not committed); read by LlmClient at startup
+  .env                     — Environment variables (LLM_API_KEY, endpoint/model/format, optional GODOT_PATH)
   scenes/
     game_board.tscn        — Root scene; contains GameBoard, TurnManager, UI nodes
   scripts/
@@ -104,7 +104,7 @@ godot/
 
 - API target: Claude Sonnet 4.6 (`claude-sonnet-4-6`) only
 - `LlmClient` is an autoload singleton using Godot's `HTTPRequest` node
-- API key is read from `res://api_key.txt` at startup; if absent, `LlmFallback` is used instead
+- API key is read from `LLM_API_KEY` (environment/.env) at startup; if absent, `LlmFallback` is used instead
 - The LLM prompt includes: current board state (ASCII grid), shop contents + gold, turn number, and the full previous game replay (prep placements + battle trace + outcome)
 - Response format expected: `PLACE: <type> (row, col)` as the last non-empty line
 - Parsed by `LlmResponseParser`; on failure, `LlmFallback` picks a random valid placement

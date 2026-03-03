@@ -6,7 +6,6 @@ class_name ReflectionClient
 signal reflection_response_received(feedback: String)
 signal reflection_request_failed(error: String)
 
-const REFLECTION_MODEL: String = "claude-sonnet-4-6"
 const MAX_GAME_REPLAYS: int = 5
 
 var _latest_feedback: String = ""
@@ -115,4 +114,4 @@ func _get_client_name() -> String:
 
 
 func _get_api_model() -> String:
-	return REFLECTION_MODEL
+	return api_model

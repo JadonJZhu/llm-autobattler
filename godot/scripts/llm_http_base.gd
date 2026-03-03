@@ -1,21 +1,32 @@
 class_name LlmHttpBase
 extends Node
-## Shared HTTP infrastructure for communicating with the Claude API.
+## Shared HTTP infrastructure for LLM API communication.
+## Supports Anthropic and OpenAI-compatible API formats.
 ## Subclasses override _on_api_response_parsed() to handle the response text.
+##
+## Configuration via environment variables (all optional):
+##   LLM_API_KEY       — API key
+##   LLM_API_ENDPOINT  — Full URL for chat completions endpoint
+##   LLM_API_MODEL     — Model identifier string
+##   LLM_API_FORMAT    — "anthropic" or "openai"
 
-const API_ENDPOINT: String = "https://api.anthropic.com/v1/messages"
+const DEFAULT_API_ENDPOINT: String = "https://api.anthropic.com/v1/messages"
+const DEFAULT_API_MODEL: String = "claude-sonnet-4-6"
+const DEFAULT_API_FORMAT: String = "anthropic"
 const ANTHROPIC_VERSION: String = "2023-06-01"
-const API_KEY_FILE_PATH: String = "res://api_key.txt"
 const REQUEST_TIMEOUT_SECONDS: float = 120.0
 const MAX_TOKENS: int = 4096
 
-var api_model: String = "claude-sonnet-4-6"
+var api_model: String = DEFAULT_API_MODEL
+var _api_endpoint: String = DEFAULT_API_ENDPOINT
+var _api_format: String = DEFAULT_API_FORMAT
 var _api_key: String = ""
 var _http_request: HTTPRequest
 var _is_requesting: bool = false
 
 
 func _ready() -> void:
+	_load_config()
 	_load_api_key()
 	_http_request = HTTPRequest.new()
 	_http_request.timeout = REQUEST_TIMEOUT_SECONDS
@@ -27,15 +38,38 @@ func has_api_key() -> bool:
 	return not _api_key.is_empty()
 
 
+func _load_config() -> void:
+	var env_endpoint: String = OS.get_environment("LLM_API_ENDPOINT")
+	if not env_endpoint.is_empty():
+		_api_endpoint = env_endpoint
+
+	var env_model: String = OS.get_environment("LLM_API_MODEL")
+	if not env_model.is_empty():
+		api_model = env_model
+
+	var env_format: String = OS.get_environment("LLM_API_FORMAT").to_lower()
+	if env_format == "anthropic" or env_format == "openai":
+		_api_format = env_format
+
+	print("%s: Config — endpoint=%s  model=%s  format=%s" % [
+		_get_client_name(), _api_endpoint, api_model, _api_format
+	])
+
+
+func _load_api_key() -> void:
+	var env_key: String = OS.get_environment("LLM_API_KEY")
+	if not env_key.is_empty():
+		_api_key = env_key
+		return
+
+	push_warning("%s: No API key found (set LLM_API_KEY env var)." % _get_client_name())
+
+
 func _send_request(system_prompt: String, user_message: String) -> void:
 	var request_body: Dictionary = _build_request_body(system_prompt, user_message)
-	var headers: PackedStringArray = PackedStringArray([
-		"Content-Type: application/json",
-		"x-api-key: " + _api_key,
-		"anthropic-version: " + ANTHROPIC_VERSION,
-	])
+	var headers: PackedStringArray = _build_headers()
 	var json_body: String = JSON.stringify(request_body)
-	var error: Error = _http_request.request(API_ENDPOINT, headers, HTTPClient.METHOD_POST, json_body)
+	var error: Error = _http_request.request(_api_endpoint, headers, HTTPClient.METHOD_POST, json_body)
 	if error != OK:
 		_is_requesting = false
 		_on_request_error(
@@ -49,30 +83,41 @@ func _send_request(system_prompt: String, user_message: String) -> void:
 		)
 
 
-func _load_api_key() -> void:
-	var file := FileAccess.open(API_KEY_FILE_PATH, FileAccess.READ)
-	if file == null:
-		push_warning("%s: No API key file found at %s." % [_get_client_name(), API_KEY_FILE_PATH])
-		return
-	_api_key = file.get_as_text().strip_edges()
-	file.close()
-	if _api_key.is_empty():
-		push_warning("%s: API key file is empty." % _get_client_name())
+func _build_headers() -> PackedStringArray:
+	if _api_format == "openai":
+		return PackedStringArray([
+			"Content-Type: application/json",
+			"Authorization: Bearer " + _api_key,
+		])
+	else:
+		return PackedStringArray([
+			"Content-Type: application/json",
+			"x-api-key: " + _api_key,
+			"anthropic-version: " + ANTHROPIC_VERSION,
+		])
 
 
 func _build_request_body(system_prompt: String, user_message: String) -> Dictionary:
-	return {
-		"model": _get_api_model(),
-		"max_tokens": MAX_TOKENS,
-		"temperature": 0,
-		"system": system_prompt,
-		"messages": [
-			{
-				"role": "user",
-				"content": user_message,
-			}
-		],
-	}
+	if _api_format == "openai":
+		return {
+			"model": _get_api_model(),
+			# Newer OpenAI models (e.g., o-series) require max_completion_tokens.
+			"max_completion_tokens": MAX_TOKENS,
+			"messages": [
+				{"role": "system", "content": system_prompt},
+				{"role": "user", "content": user_message},
+			],
+		}
+	else:
+		return {
+			"model": _get_api_model(),
+			"max_tokens": MAX_TOKENS,
+			"temperature": 0,
+			"system": system_prompt,
+			"messages": [
+				{"role": "user", "content": user_message},
+			],
+		}
 
 
 func _on_request_completed(result: int, response_code: int, headers: PackedStringArray, body: PackedByteArray) -> void:
@@ -128,14 +173,22 @@ func _on_request_completed(result: int, response_code: int, headers: PackedStrin
 
 
 func _extract_response_text(response: Dictionary) -> String:
-	var content_blocks: Array = response.get("content", [])
-	var response_text: String = ""
-	for block in content_blocks:
-		var block_dict: Dictionary = block as Dictionary
-		var block_type: String = block_dict.get("type", "")
-		if block_type == "text":
-			response_text += block_dict.get("text", "")
-	return response_text
+	if _api_format == "openai":
+		var choices: Array = response.get("choices", [])
+		if choices.is_empty():
+			return ""
+		var first_choice: Dictionary = choices[0] as Dictionary
+		var message: Dictionary = first_choice.get("message", {})
+		return message.get("content", "")
+	else:
+		var content_blocks: Array = response.get("content", [])
+		var response_text: String = ""
+		for block in content_blocks:
+			var block_dict: Dictionary = block as Dictionary
+			var block_type: String = block_dict.get("type", "")
+			if block_type == "text":
+				response_text += block_dict.get("text", "")
+		return response_text
 
 
 func _headers_to_map(headers: PackedStringArray) -> Dictionary:

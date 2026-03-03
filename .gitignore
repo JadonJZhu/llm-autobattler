@@ -7,8 +7,6 @@ godot/.godot/
 # API keys / secrets
 .env
 *.env.local
-api_key.txt
-api_key_holder.txt
 
 # Game logs output (runtime-generated)
 godot/logs/
@@ -17,13 +15,19 @@ godot/logs/
 
 gut-docs
 
-TODO.md
-
-perspective-normalization-plan.md
 
 __pycache__/
 *.pyc
 
-tests.txt
-
 ablation_results
+
+# LaTeX build artifacts
+*.aux
+*.fdb_latexmk
+*.fls
+*.log
+*.out
+*.synctex.gz
+*.pdf
+
+.claude/

@@ -1,0 +1,443 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{amsmath}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{subcaption}
+\usepackage[numbers]{natbib}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    citecolor=blue,
+    urlcolor=blue
+}
+
+\title{Prompt Component Ablation for Multi-Turn LLM Strategy\\in an Auto Battler Environment}
+\author{Jadon Zhu}
+\date{March 2026}
+
+\begin{document}
+\maketitle
+
+% ------------------------------------------------------------------
+\begin{abstract}
+We present an interactive auto battler game built in Godot~4 in which a large language model competes against scripted opponents across multi-turn preparation and battle phases.
+The game is fully playable by a human, and the same environment serves as a controlled evaluation harness for LLM strategic reasoning.
+We isolate three prompt components---\emph{instructions} (explicit game rules), \emph{examples} (worked battle traces), and \emph{reflection} (periodic strategic self-critique)---and run a $2^3$ full-factorial ablation across a suite of puzzle scenarios.
+Preliminary results indicate that both instructions and examples independently raise the pass rate from 33\% to 100\%, with instructions yielding the highest sample efficiency (4.67 mean attempts vs.\ 6.67 for examples alone).
+Reflection shows a modest marginal effect (+8.3\% pass rate), which we attribute to a deliberate per-puzzle isolation design whose trade-offs we discuss.
+We describe the experimental design, limitations of the current study, and planned extensions.
+\end{abstract}
+
+% ------------------------------------------------------------------
+\section{Introduction}\label{sec:intro}
+
+Evaluating how large language models reason over multiple turns in structured environments is an active area of research.
+Riot Games' \emph{WILT: A Multi-Turn Inductive Logic Benchmark for LLMs}~\cite{wilt2025} demonstrates that multi-turn inductive reasoning---where the model must update beliefs across sequential observations---remains a meaningful challenge for frontier models.
+Separately, Park et~al.'s \emph{Generative Agents} work~\cite{park2023generative} showed that a reflection mechanism, in which an LLM periodically synthesizes past social experience into higher-level insight, can substantially improve the coherence of agent behavior over time.
+Related efforts include Voyager~\cite{wang2023voyager}, which demonstrated autonomous LLM-driven skill acquisition in Minecraft, and Reflexion~\cite{shinn2023reflexion}, which showed that verbal self-reflection on past failures can improve sequential decision-making without weight updates.
+
+This project sits at the intersection of these ideas.
+We build a lightweight autobattler game---inspired by games such as Riot's \emph{Teamfight Tactics}---and use it as a controlled test bed for LLM multi-turn decision-making.
+The game features a \textbf{Preparation phase}, where both players make sequential unit-placement decisions, and a \textbf{Battle phase}, where units fight under fully deterministic rules.
+The LLM receives its full game history as context each turn, and must develop and refine its strategy across multiple attempts at each puzzle.
+
+The game is designed to be playable by a human as well: a human player can place units against the LLM in real time through the Godot UI, providing a foundation for future work on human--LLM collaborative or competitive gameplay.
+
+Our central experiment is a \textbf{prompt component ablation}.
+We decompose the LLM's system prompt into three independently toggleable components and measure their individual and combined effects on puzzle-solving performance.
+This parallels the spirit of WILT---measuring what LLMs can infer from observation versus what they need to be told---in a game-theoretic, multi-turn setting.
+All code, prompts, and puzzle definitions needed to play the game and reproduce the experiment are publicly available on \href{https://github.com/JadonJZhu/interactive-puzzle-solving}{GitHub}.
+
+% ------------------------------------------------------------------
+\section{Game Design}\label{sec:game}
+
+\subsection{Overview}
+
+% TODO: Replace placeholder with an actual screenshot of the game board
+% during the preparation phase, showing both shops, gold counts, and
+% placed units. A short looping GIF or video link in the digital version
+% would further help readers visualize the gameplay loop.
+\begin{figure}[h]
+\centering
+% \includegraphics[width=0.7\textwidth]{figures/game_screenshot.png}
+\caption{The game board during a preparation phase. The LLM's units (top two rows) and the opponent's units (bottom two rows) are visible alongside each player's shop and gold. The LLM's reasoning is displayed in the side panel.}
+\label{fig:game-board}
+\end{figure}
+
+The game is played on a $4 \times 3$ grid.
+The LLM controls the top two rows (rows 0--1); the opponent controls the bottom two rows (rows 2--3).
+Each round consists of two phases:
+
+\begin{enumerate}[nosep]
+    \item \textbf{Preparation.} Players alternate placing units from a randomized shop. The LLM always places first. Each unit costs gold (types A, B, C cost 1g; type D costs 2g).
+    \item \textbf{Battle.} Units activate in priority order (A $>$ B $>$ C $>$ D, then by placement order). Each unit type has a distinct behavior: A attacks straight ahead, B attacks diagonally left, C attacks diagonally right, and D removes the closest enemy by Manhattan distance. Units that advance off the board escape and contribute one point to their owner's score.
+\end{enumerate}
+
+The winner is the player with the higher score (remaining units on board plus escaped units).
+Ties do not count as a win for either side.
+
+\subsection{Deterministic Battle Resolution}
+
+The battle engine is a fully deterministic function: given a board configuration and the active player, it produces an identical sequence of events every time.
+This is a deliberate design choice: all variance in experimental results is attributable to the LLM's placement decisions during preparation, not to combat resolution.
+
+\subsection{Human Playability}
+
+The Godot UI supports full human play: a human can click cells to place units, observe battles and LLM reasoning, and compete against the LLM in real time.
+This dual-use design---human-playable game that doubles as an LLM evaluation harness---demonstrates a vision for interactive human--LLM gameplay and provides a path toward future studies involving human--AI collaboration or competition.
+
+% ------------------------------------------------------------------
+\section{LLM Integration}\label{sec:llm}
+
+\subsection{Prompt Architecture}
+
+The LLM (Claude Sonnet~4.6) receives a system prompt assembled from modular, independently toggleable text files:
+
+\begin{enumerate}[nosep]
+    \item \textbf{Role description} (always included): describes the fundamental rules, possible unit types, and costs. Crucially, the role prompt does not include the behavior of the units. It tells the LLM that mechanics ``may or may not be provided'' and that it must ``use past game tracethroughs and outcomes to infer how units behave.''
+    \item \textbf{Instructions} (toggle \texttt{I}): explicit unit mechanics and scoring rules.
+    \item \textbf{Examples} (toggle \texttt{E}): worked battle trace demonstrations.
+    \item \textbf{Reflection} (toggle \texttt{R}): periodic strategic feedback synthesized from recent game replays (see Section~\ref{sec:reflection}).
+    \item \textbf{Response format} (always included): enforces a strict \texttt{PLACE: <type> (row, col)} output format.
+\end{enumerate}
+
+Each toggle is a binary on/off, yielding $2^3 = 8$ configurations labeled \texttt{I\{0,1\}\_E\{0,1\}\_R\{0,1\}}.
+
+\subsection{Game History as Context}
+
+Each turn, the LLM receives the current board state (as an ASCII grid), both players' shop contents and gold, the turn number, and the full replay of up to the previous 10 games (preparation placements, battle trace, and outcome).
+This allows the LLM to refine its strategy based on observed outcomes---the core multi-turn reasoning loop.
+
+\subsection{Reflection Mechanism}\label{sec:reflection}
+
+Inspired by the reflection architecture in Park et~al.~\cite{park2023generative}, we implement a \textbf{periodic reflection} system.
+A separate \texttt{ReflectionClient} calls the Claude API every 2 completed games, passing recent game replays and the LLM's reasoning log.
+The reflection model returns 3--5 bullet points of actionable strategic feedback, which is then injected into the LLM's system prompt for subsequent turns.
+In a 30-attempt puzzle run, this produces approximately 14 reflection cycles.
+We analyze the interaction between this mechanism and our per-puzzle isolation design in Section~\ref{sec:reflection-analysis}.
+
+% ------------------------------------------------------------------
+\section{Experimental Design}\label{sec:experiment}
+
+\subsection{Research Question}
+
+How do individual prompt components---instructions, examples, and reflection---contribute to an LLM's ability to solve multi-turn strategic puzzles?
+
+\subsection{Independent Variables}
+
+We manipulate the three binary prompt toggles described in Section~\ref{sec:llm}: Instructions~(\texttt{I}), Examples~(\texttt{E}), and Reflection~(\texttt{R}), in a $2^3$ full-factorial design yielding 8 configurations.
+
+\subsection{Dependent Variables}
+
+\begin{itemize}[nosep]
+    \item \textbf{Pass rate}: fraction of puzzles solved per configuration (solved iff LLM score $>$ opponent score).
+    \item \textbf{Attempts needed}: number of attempts before first solve, measuring sample efficiency. Capped at the maximum attempt budget (30) for unsolved puzzles.
+\end{itemize}
+
+\subsection{Controls}
+
+\begin{itemize}[nosep]
+    \item \textbf{Deterministic battle and scripted opponent}: eliminates both combat and opponent-side variance (see Sections~\ref{sec:game} and~\ref{sec:experiment}).
+    \item \textbf{Identical puzzle suite}: all 8 configurations are evaluated on the same 3 puzzles.
+    \item \textbf{Fixed model and temperature}: Claude Sonnet~4.6 with temperature~$= 0$ across all runs.
+    \item \textbf{Per-puzzle isolation}: game history and reflection feedback are cleared at the start of each puzzle (rationale discussed in Section~\ref{sec:reflection-analysis}).
+\end{itemize}
+
+\subsection{Puzzle Suite}
+
+Three puzzles define fixed LLM shops, opponent shops, gold budgets, and scripted opponent placement sequences (Table~\ref{tab:puzzles}).
+The LLM receives up to 30 attempts per puzzle per configuration.
+The opponent's gold and unit advantages vary across puzzles to create asymmetric challenges.
+Full puzzle definitions are given in Appendix~\ref{sec:puzzles}.
+
+% ------------------------------------------------------------------
+\section{Experiment Infrastructure}\label{sec:infra}
+
+Running $8 \times 3 = 24$ puzzle--configuration pairs, each allowing up to 30 attempts, requires robust orchestration.
+We implement a Python orchestrator (\texttt{run\_ablation.py}) that launches up to 8 parallel headless Godot workers, one per configuration.
+
+Key design decisions for the experiment pipeline:
+\begin{itemize}[nosep]
+    \item \textbf{Parallel execution with staggered launches}: workers start 1.5 seconds apart to avoid API rate-limit bursts while maximizing throughput.
+    \item \textbf{Exponential backoff with jitter}: both the in-game LLM client and the Python orchestrator implement retry logic with exponential backoff for transient API failures, preventing cascade failures during long runs.
+    \item \textbf{Checkpoint and resume}: the orchestrator saves incremental progress after each worker completes. Interrupted runs can be resumed without re-running completed configurations.
+    \item \textbf{Atomic JSON writes}: result files are written atomically (via temporary file and rename) to prevent data corruption if a worker crashes mid-write.
+    \item \textbf{Early termination with partial preservation}: five consecutive API errors trigger graceful shutdown, saving all results collected to that point rather than discarding the entire run.
+    \item \textbf{Automated analysis}: upon completion, the merged results are passed to an analysis module that computes per-configuration and per-puzzle summary statistics, marginal feature impact deltas, and best/worst configuration rankings.
+\end{itemize}
+
+% ------------------------------------------------------------------
+\section{Results}\label{sec:results}
+
+\subsection{Per-Configuration Performance}
+
+Table~\ref{tab:config-results} shows pass rate, puzzles solved, and mean attempts to solve (computed only over solved puzzles) for each of the 8 configurations.
+
+\begin{table}[h]
+\centering
+\caption{Per-configuration results across 3 puzzles (30 max attempts each).}
+\label{tab:config-results}
+\begin{tabular}{lccc}
+\toprule
+\textbf{Config} & \textbf{Pass Rate} & \textbf{Solved} & \textbf{Mean Attempts (solved)} \\
+\midrule
+I0\_E0\_R0 & 0.333 & 1/3 & 14.00 \\
+I0\_E0\_R1 & 0.667 & 2/3 & 14.50 \\
+I0\_E1\_R0 & 1.000 & 3/3 & 6.67 \\
+I0\_E1\_R1 & 1.000 & 3/3 & 12.33 \\
+\textbf{I1\_E0\_R0} & \textbf{1.000} & \textbf{3/3} & \textbf{4.67} \\
+I1\_E0\_R1 & 1.000 & 3/3 & 5.67 \\
+I1\_E1\_R0 & 1.000 & 3/3 & 9.33 \\
+I1\_E1\_R1 & 1.000 & 3/3 & 5.33 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Marginal Feature Impact}
+
+Table~\ref{tab:feature-impact} reports the average pass rate when each feature is off versus on, averaged across all configurations where the other two features vary freely.
+
+\begin{table}[h]
+\centering
+\caption{Marginal feature impact on pass rate.}
+\label{tab:feature-impact}
+\begin{tabular}{lccc}
+\toprule
+\textbf{Feature} & \textbf{Avg Off} & \textbf{Avg On} & \textbf{$\Delta$} \\
+\midrule
+Instructions & 0.750 & 1.000 & +0.250 \\
+Examples     & 0.750 & 1.000 & +0.250 \\
+Reflection   & 0.833 & 0.917 & +0.083 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Directional Findings}
+
+\begin{enumerate}[nosep]
+    \item \textbf{The baseline is weakest.} Without any prompt scaffolding (\texttt{I0\_E0\_R0}), the LLM solves only 1 of 3 puzzles and requires 14 attempts to do so. It must infer all game mechanics purely from battle traces provided in the game history.
+    \item \textbf{Instructions and examples are each independently sufficient for pass rate.} Either component alone raises the pass rate from 33\% to 100\%.
+    \item \textbf{Instructions are the most sample-efficient.} \texttt{I1\_E0\_R0} achieves the fastest mean solve time (4.67 attempts), suggesting that explicit rules outperform learned-by-example approaches for this type of strategic reasoning. Further studies are needed to confirm this with statistical significance.
+    \item \textbf{Reflection has a modest marginal effect.} The +8.3\% pass rate delta for reflection is the smallest of the three features. We discuss the design choices contributing to this in Section~\ref{sec:reflection-analysis}.
+    \item \textbf{Possible diminishing returns from combining features.} \texttt{I1\_E1\_R0} (9.33 mean attempts) is slower than \texttt{I1\_E0\_R0} (4.67), suggesting potential prompt-length interference when both instructions and examples are present. Further studies are needed to affirm this causal claim.
+\end{enumerate}
+
+% ------------------------------------------------------------------
+\section{Analysis of the Reflection Toggle}\label{sec:reflection-analysis}
+
+The modest measured effect of the reflection toggle warrants detailed discussion, as it reflects a deliberate experimental design trade-off rather than a failure of the reflection mechanism.
+
+\subsection{Per-Puzzle Isolation Design}
+
+In our ablation, game history and reflection feedback are \textbf{cleared at the start of each new puzzle}.
+This means the LLM begins each puzzle with no accumulated strategic memory from prior puzzles.
+We made this choice to ensure that results are \textbf{independent per puzzle}: without clearing, puzzles evaluated later in the sequence would systematically benefit from feedback accumulated during earlier puzzles.
+This would disrupt per-puzzle comparisons between reflection-enabled and reflection-disabled configurations, because the reflection condition would carry an ordering advantage unrelated to the puzzle itself.
+
+\subsection{Within-Puzzle Reflection Dynamics}
+
+We hypothesize that within-puzzle reflection is most impactful for \textbf{highly difficult puzzles where the model requires many attempts}.
+When the model needs 15--30 attempts to converge on a solution, the repeated reflection cycles (approximately 14 over a 30-attempt budget) provide meaningful strategic course-correction.
+However, when puzzles are solved in fewer than 6 attempts---as is the case for most configurations on our current puzzle suite---the reflection mechanism fires at most 2--3 times before the puzzle is already solved, producing minimal observable effect.
+
+The current puzzle suite does not contain sufficient difficulty variation to distinguish reflection's contribution.
+A suite with a broader difficulty range---including puzzles that consistently require 15+ attempts---would likely surface a stronger effect.
+Accumulating reflection feedback across puzzles would likely improve aggregate performance but at the cost of introducing ordering effects that complicate per-puzzle analysis.
+A future design could evaluate both modes: per-puzzle isolation for controlled comparison and cross-puzzle accumulation for measuring long-horizon learning.
+
+% ------------------------------------------------------------------
+\section{Limitations}\label{sec:limitations}
+
+We identify the following threats to validity.
+
+\paragraph{Statistical power.}
+With only 3 puzzles, each puzzle outcome changes the pass rate by 33 percentage points.
+We report no confidence intervals or significance tests; all findings are directional.
+A suite of 15--30 puzzles spanning difficulty tiers may be needed for robust statistical claims.
+
+\paragraph{Puzzle diversity.}
+The current puzzles do not create sufficient separation between the six configurations that achieve 100\% pass rate.
+Puzzles spanning a wider difficulty range---where some configurations pass and others fail---would yield more discriminative results.
+
+\paragraph{LLM stochasticity.}
+LLM API responses are inherently stochastic.
+Multiple runs of the same configuration on the same puzzle may yield different results.
+Random fallback placements on parse failure introduce additional uncontrolled variance.
+
+\paragraph{Single model.}
+All results use Claude Sonnet~4.6.
+Findings may not generalize to other LLMs or model sizes.
+Cross-model comparison would strengthen external validity.
+
+\paragraph{Attempt budget--pass rate tension.}
+Our two dependent variables are in tension.
+A higher attempt budget (e.g., 50 or 100) would yield more variance in attempts-to-solve, improving the discriminative power of that metric.
+However, more attempts also inflate pass rates toward 1.0, reducing the discriminative power of the pass rate metric.
+The current budget of 30 was chosen as a practical compromise, but a principled calibration---setting the budget so that the median configuration solves approximately 50--75\% of puzzles---would better balance both metrics.
+
+\paragraph{Prompt length confound.}
+Enabling instructions or examples increases total prompt length.
+We cannot fully disentangle the effect of ``more information'' from ``specific information type.''
+A prompt-length-matched control (e.g., filler text of equal token count) would isolate this confound.
+
+% ------------------------------------------------------------------
+\section{Related Work}\label{sec:related}
+
+\paragraph{Multi-turn LLM evaluation.}
+WILT~\cite{wilt2025} evaluates LLMs on multi-turn inductive logic tasks where the model must update hypotheses across sequential observations.
+Our work applies a similar principle---measuring what LLMs can infer from sequential game observations versus what they need to be told explicitly---in a game-theoretic environment with strategic placement decisions.
+
+\paragraph{Generative agents and reflection.}
+Park et~al.~\cite{park2023generative} introduced a reflection mechanism for LLM-driven agents in a simulated social environment (Smallville), where periodic synthesis of past experience into higher-level observations improved long-term behavioral coherence.
+We adapt this idea to a competitive game setting: a separate reflection model periodically analyzes recent game replays and produces strategic feedback that is injected into the primary LLM's prompt.
+Shinn et~al.'s Reflexion~\cite{shinn2023reflexion} similarly demonstrates that verbal self-reflection on past task failures can improve sequential decision-making without weight updates.
+Our reflection mechanism draws on both lines of work: like Generative Agents, it synthesizes experience into higher-level strategic feedback; like Reflexion, the goal is course-correction from observed failures across repeated attempts.
+
+\paragraph{Auto battler games.}
+The game design draws directly from the auto battler genre, particularly Riot Games' \emph{Teamfight Tactics}, where players make strategic unit-purchase and placement decisions during a preparation phase, then watch units fight automatically.
+Our simplified $4 \times 3$ grid with four unit types preserves the core decision loop---shop management, positional reasoning, opponent anticipation---while reducing the state space to a level tractable for controlled LLM evaluation.
+
+% ------------------------------------------------------------------
+\section{Future Work}\label{sec:future}
+
+\begin{enumerate}[nosep]
+    \item \textbf{Expand puzzle suite.} Scale to 15--30 puzzles across easy, medium, and hard tiers to achieve meaningful statistical separation between configurations and enable significance testing.
+    \item \textbf{Varying difficulty in puzzle creation.} Create puzzles that target the decision boundary between configurations, maximizing discriminative power.
+    \item \textbf{Evaluate cross-puzzle reflection accumulation.} Run a parallel experimental arm where reflection feedback accumulates across puzzles, comparing against the per-puzzle isolation condition to measure long-horizon learning effects.
+    \item \textbf{Cross-model comparison.} Run the same ablation with different model sizes or providers to test generalizability of findings.
+    \item \textbf{Extended thinking extraction.} Capture the LLM's reasoning chain (not just the final placement) to understand \emph{why} certain prompt components improve performance.
+    \item \textbf{Human--LLM interaction studies.} Leverage the human-playable interface to study human--AI collaboration, competitive dynamics, or human evaluation of LLM strategic reasoning.
+\end{enumerate}
+
+% ------------------------------------------------------------------
+\section{Conclusion}\label{sec:conclusion}
+
+We present an end-to-end system for evaluating LLM multi-turn strategic reasoning: an interactive autochess game in Godot that serves both as a playable game and as a controlled evaluation harness.
+A $2^3$ full-factorial ablation over prompt components reveals that instructions and examples are each independently sufficient to raise puzzle-solving pass rates from 33\% to 100\%, with instructions yielding the highest sample efficiency.
+Reflection shows a modest effect under the current design, which we attribute to per-puzzle isolation and insufficient puzzle difficulty variation rather than a fundamental limitation of the mechanism.
+
+The preliminary nature of these results---3 puzzles, single model, no significance tests---is a limitation we acknowledge explicitly.
+The contribution at this stage is the evaluation framework itself: a deterministic, extensible environment with automated parallel orchestration, designed for iterative experimentation on LLM reasoning in multi-turn game settings.
+
+% ------------------------------------------------------------------
+\appendix
+\section{Engineering Details}\label{sec:appendix}
+
+For readers interested in the software architecture, we provide additional detail.
+
+\paragraph{Signal-driven architecture.}
+The system is built on Godot's signal model, with zero hardcoded cross-node references.
+Three layers are cleanly separated: pure logic classes (extending \texttt{RefCounted}) for battle simulation and data models, orchestration nodes (extending \texttt{Node}) for game flow, and UI nodes for presentation.
+Signals decouple these layers entirely---adding a new logging system or UI component requires connecting to existing signals, not modifying game logic.
+
+\paragraph{Composition over inheritance.}
+The battle engine, shop, and serializer are composed into the turn manager rather than inherited.
+Pure data classes (\texttt{LlmModeConfig}, \texttt{PuzzleScenario}, \texttt{BattleSnapshot}) are testable in isolation without a Godot scene tree.
+
+\paragraph{Deterministic snapshot pattern.}
+\texttt{BattleEngine.execute\_step(snapshot, owner)} is a pure function: given the same snapshot and active owner, it produces the identical transition dictionary every time.
+This referential transparency enables exact replay, test assertions on battle outcomes, and eliminates simulation as a confounding variable in experiments.
+
+\paragraph{Unit test suite.}
+The project includes a GUT (Godot Unit Testing) test suite covering the battle engine, board serializer, LLM response parser, shop logic, and prompt builder---validating the core logic layer independently of the scene tree.
+
+% ------------------------------------------------------------------
+\section{Puzzle Suite Definitions}\label{sec:puzzles}
+
+Table~\ref{tab:puzzles} summarizes the shop and gold parameters for each puzzle.
+Figure~\ref{fig:puzzles} shows the opponent's scripted board placements.
+Rows 0--1 (LLM territory) are empty at the start of each preparation phase; the LLM must decide how to fill them.
+
+\begin{table}[h]
+\centering
+\caption{Puzzle suite definitions. Unit costs: A, B, C = 1g; D = 2g.}
+\label{tab:puzzles}
+\begin{tabular}{clclcc}
+\toprule
+\textbf{Puzzle} & \textbf{LLM Shop} & \textbf{LLM Gold} & \textbf{Opp.\ Shop} & \textbf{Opp.\ Gold} & \textbf{Opp.\ Units} \\
+\midrule
+1 & A, C, B & 3 & A, B, D & 6 & 2A, 2B, 1D \\
+2 & A, B, D & 3 & A, C, D & 6 & 1C, 2A, 2D \\
+3 & A, C, D & 4 & D, A, B, C & 5 & 1D, 2B, 1C \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[h]
+\centering
+\begin{subfigure}[t]{0.32\textwidth}
+\centering
+\begin{tabular}{c|c|c|c}
+       & 0 & 1 & 2 \\ \hline
+R0 & $\cdot$ & $\cdot$ & $\cdot$ \\ \hline
+R1 & $\cdot$ & $\cdot$ & $\cdot$ \\ \hline
+R2 & A & A & B \\ \hline
+R3 & $\cdot$ & D & B \\
+\end{tabular}
+\caption{Puzzle 1: \{A,C,B\} 3g vs.\ 6g}
+\label{fig:puzzle1}
+\end{subfigure}
+\hfill
+\begin{subfigure}[t]{0.32\textwidth}
+\centering
+\begin{tabular}{c|c|c|c}
+       & 0 & 1 & 2 \\ \hline
+R0 & $\cdot$ & $\cdot$ & $\cdot$ \\ \hline
+R1 & $\cdot$ & $\cdot$ & $\cdot$ \\ \hline
+R2 & C & A & A \\ \hline
+R3 & D & D & $\cdot$ \\
+\end{tabular}
+\caption{Puzzle 2: \{A,B,D\} 3g vs.\ 6g}
+\label{fig:puzzle2}
+\end{subfigure}
+\hfill
+\begin{subfigure}[t]{0.32\textwidth}
+\centering
+\begin{tabular}{c|c|c|c}
+       & 0 & 1 & 2 \\ \hline
+R0 & $\cdot$ & $\cdot$ & $\cdot$ \\ \hline
+R1 & $\cdot$ & $\cdot$ & $\cdot$ \\ \hline
+R2 & C & B & B \\ \hline
+R3 & $\cdot$ & $\cdot$ & D \\
+\end{tabular}
+\caption{Puzzle 3: \{A,C,D\} 4g vs.\ 5g}
+\label{fig:puzzle3}
+\end{subfigure}
+\caption{Opponent board layouts for all three puzzles. Rows 0--1 (LLM territory) are empty; rows 2--3 show scripted opponent placements. Subcaptions list LLM shop and gold vs.\ opponent gold.}
+\label{fig:puzzles}
+\end{figure}
+
+% ------------------------------------------------------------------
+
+\bibliographystyle{plainnat}
+\begin{thebibliography}{2}
+
+\bibitem[Banatt et~al.(2024)]{wilt2025}
+Eryk Banatt, Jonathan Cheng, Skanda Vaidyanath, and Tiffany Hwu.
+\newblock {WILT}: A Multi-Turn, Memorization-Robust Inductive Logic Benchmark for {LLMs}.
+\newblock \emph{arXiv preprint arXiv:2410.10998}, 2024.
+
+\bibitem[Park et~al.(2023)]{park2023generative}
+Joon~Sung Park, Joseph~C. O'Brien, Carrie~J. Cai, Meredith~Ringel Morris, Percy Liang, and Michael~S. Bernstein.
+\newblock Generative Agents: Interactive Simulacra of Human Behavior.
+\newblock In \emph{Proceedings of the 36th Annual ACM Symposium on User Interface Software and Technology (UIST '23)}, 2023.
+
+\bibitem[Wang et~al.(2023)]{wang2023voyager}
+Guanzhi Wang, Yuqi Xie, Yunfan Jiang, Ajay Mandlekar, Chaowei Xiao, Yuke Zhu, Linxi Fan, and Anima Anandkumar.
+\newblock Voyager: An Open-Ended Embodied Agent with Large Language Models.
+\newblock \emph{arXiv preprint arXiv:2305.16291}, 2023.
+
+\bibitem[Shinn et~al.(2023)]{shinn2023reflexion}
+Noah Shinn, Federico Cassano, Ashwin Gopinath, Karthik Narasimhan, and Shunyu Yao.
+\newblock Reflexion: Language Agents with Verbal Reinforcement Learning.
+\newblock In \emph{Advances in Neural Information Processing Systems (NeurIPS)}, 2023.
+
+\end{thebibliography}
+
+\end{document}

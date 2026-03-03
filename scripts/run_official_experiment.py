@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -18,6 +19,7 @@ DEFAULT_PROJECT_PATH = "./godot"
 DEFAULT_PUZZLE_PATH = "res://puzzles/puzzle_suite.json"
 DEFAULT_MAX_ATTEMPTS = 30
 DEFAULT_CHECKPOINT_FILENAME = "full_ablation_checkpoint.json"
+DOTENV_PATH = REPO_ROOT / ".env"
 EXPECTED_FULL_CONFIGS = {
     "I0_E0_R0",
     "I0_E0_R1",
@@ -34,18 +36,31 @@ def _read_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _require_real_api_key(api_key_path: Path) -> None:
-    if not api_key_path.exists() or not api_key_path.is_file():
-        raise SystemExit(
-            f"Missing API key file at {api_key_path}. "
-            "Official ablation requires a real key in godot/api_key.txt."
-        )
+def _load_dotenv_values(dotenv_path: Path) -> dict[str, str]:
+    if not dotenv_path.exists():
+        return {}
 
-    key_text = api_key_path.read_text(encoding="utf-8").strip()
-    if not key_text:
+    values: dict[str, str] = {}
+    for raw_line in dotenv_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if not key:
+            continue
+        values[key] = value.strip().strip("'").strip('"')
+    return values
+
+
+def _require_real_api_key() -> None:
+    env_key = os.environ.get("LLM_API_KEY", "").strip()
+    if not env_key:
+        env_key = _load_dotenv_values(DOTENV_PATH).get("LLM_API_KEY", "").strip()
+    if not env_key:
         raise SystemExit(
-            f"API key file exists but is empty: {api_key_path}. "
-            "Official ablation requires a real key in godot/api_key.txt."
+            "Missing LLM API key. Official ablation requires LLM_API_KEY "
+            "in environment or .env."
         )
 
 
@@ -176,8 +191,7 @@ def main() -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Double-check before any run selection to guarantee "official" conditions.
-    api_key_path = REPO_ROOT / "godot" / "api_key.txt"
-    _require_real_api_key(api_key_path)
+    _require_real_api_key()
 
     checkpoint_path = _find_latest_incomplete_checkpoint(output_dir)
     if checkpoint_path is not None:
@@ -201,7 +215,7 @@ def main() -> int:
         )
 
     # Double-check right before launch in case the key file changed during setup.
-    _require_real_api_key(api_key_path)
+    _require_real_api_key()
 
     print("Launching command:")
     print(" ".join(command))
