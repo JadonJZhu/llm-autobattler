@@ -9,7 +9,7 @@ const API_KEY_FILE_PATH: String = "res://api_key.txt"
 const REQUEST_TIMEOUT_SECONDS: float = 120.0
 const MAX_TOKENS: int = 4096
 
-var api_model: String = "claude-opus-4-6"
+var api_model: String = "claude-sonnet-4-6"
 var _api_key: String = ""
 var _http_request: HTTPRequest
 var _is_requesting: bool = false

@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-A 4x3 autochess game built in Godot where an LLM (Claude Opus 4.6) competes against a human player. Both players spend gold to buy and place units during a **Prep phase**, then watch units fight automatically in a **Battle phase**. The LLM receives a full game replay of the previous match to inform its next prep decisions.
+A 4x3 autochess game built in Godot where an LLM (Claude Sonnet 4.6) competes against a human player. Both players spend gold to buy and place units during a **Prep phase**, then watch units fight automatically in a **Battle phase**. The LLM receives a full game replay of the previous match to inform its next prep decisions.
 
 The project also supports a **Puzzle-Based Ablation Mode**: the opponent follows a scripted sequence of placements, and the LLM is evaluated across all prompt configurations (`instructions`, `examples`, `reflection`) by how many attempts it needs to solve each puzzle.
 
@@ -102,7 +102,7 @@ godot/
 
 ## LLM Integration Notes
 
-- API target: Claude Opus 4.6 (`claude-opus-4-6`) only
+- API target: Claude Sonnet 4.6 (`claude-sonnet-4-6`) only
 - `LlmClient` is an autoload singleton using Godot's `HTTPRequest` node
 - API key is read from `res://api_key.txt` at startup; if absent, `LlmFallback` is used instead
 - The LLM prompt includes: current board state (ASCII grid), shop contents + gold, turn number, and the full previous game replay (prep placements + battle trace + outcome)
