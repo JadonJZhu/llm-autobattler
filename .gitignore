@@ -28,6 +28,5 @@ ablation_results
 *.log
 *.out
 *.synctex.gz
-*.pdf
 
 .claude/
