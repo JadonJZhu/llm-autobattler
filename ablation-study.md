@@ -445,3 +445,87 @@ If you want richer analysis after export, compute offline:
 - Bootstrap confidence intervals for pass rate differences.
 
 These can all be computed directly from saved `results.results[]` entries.
+
+---
+
+## 15) Parallel headless orchestration (full + mini)
+
+The project now supports running ablations in parallel from Python by launching
+multiple headless Godot workers, each pinned to one mode config.
+
+### Godot CLI entrypoints
+
+`GameController` supports:
+
+- `--ablation` for full ablation mode.
+- `--mini-ablation` for mini-ablation mode.
+- Shared options:
+  - `--config Ix_Ex_Rx` (single-config filtering per worker)
+  - `--max-attempts <int>`
+  - `--puzzle-path <path>` (for example `res://puzzles/puzzle_suite.json`)
+  - `--output-prefix <prefix>`
+
+At completion, headless runs print a machine-readable sentinel:
+
+- `ABLATION_OUTPUT_PATH:<absolute_path>`
+
+and then exit automatically (`0` success, `1` terminated early / failed save).
+
+### Python orchestrator
+
+Script: `scripts/run_ablation.py`
+
+Default full run (8 workers):
+
+```bash
+python scripts/run_ablation.py \
+  --godot-path /path/to/godot \
+  --project-path ./godot \
+  --max-attempts 10 \
+  --max-parallel 8
+```
+
+Mini parallel run (defaults to `I0_E0_R0` and `I1_E1_R1`):
+
+```bash
+python scripts/run_ablation.py \
+  --godot-path /path/to/godot \
+  --mode mini \
+  --max-attempts 3 \
+  --max-parallel 2
+```
+
+Small subset smoke test:
+
+```bash
+python scripts/run_ablation.py \
+  --godot-path /path/to/godot \
+  --configs I0_E0_R0 I1_E1_R1 \
+  --max-attempts 2
+```
+
+### Outputs
+
+The orchestrator writes to `--output-dir` (default `./ablation_results`):
+
+- `<mode>_ablation_merged_<timestamp>.json` (merged workers payload)
+- `ablation_analysis_<timestamp>.json` (post-run analysis)
+
+### Analysis module
+
+Script: `scripts/ablation_analysis.py`
+
+Can be run standalone on a merged payload:
+
+```bash
+python scripts/ablation_analysis.py \
+  --input ./ablation_results/full_ablation_merged_<timestamp>.json \
+  --output-dir ./ablation_results
+```
+
+The analysis output includes:
+
+- Per-config summary table (`pass_rate`, solved/total, mean attempts on solved puzzles)
+- Difficulty-stratified pass rates per config
+- Feature impact deltas (`instructions`, `examples`, `reflection`, ON vs OFF)
+- Best/worst config by pass-rate-centered ranking

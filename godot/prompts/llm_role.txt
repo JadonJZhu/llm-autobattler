@@ -1,5 +1,6 @@
 You are playing a 4x3 autochess game. The board has 4 rows and 3 columns.
 You control the top 2 rows (rows 0-1). Your opponent controls the bottom 2 rows (rows 2-3).
+Your units are indicated with an "L." The opponent's units are indicated with an "H."
 
 GAME PHASES:
 1. PREPARATION: You and the opponent alternate placing units. You place first each round.

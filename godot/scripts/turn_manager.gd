@@ -21,6 +21,7 @@ signal status_updated(message: String)
 # --- Exports ---
 
 @export var battle_step_delay_seconds: float = 0.8
+const MIN_BATTLE_STEP_DELAY_SECONDS: float = 0.001
 
 # --- State ---
 
@@ -63,7 +64,7 @@ func initialize(board: GameBoard, llm_shop: Shop, human_shop: Shop) -> void:
 		_battle_timer.queue_free()
 	_battle_timer = Timer.new()
 	_battle_timer.one_shot = true
-	_battle_timer.wait_time = battle_step_delay_seconds
+	_battle_timer.wait_time = _get_effective_battle_step_delay()
 	_battle_timer.timeout.connect(_on_battle_timer_timeout)
 	add_child(_battle_timer)
 
@@ -233,7 +234,7 @@ func set_autoplay(enabled: bool) -> void:
 
 	if autoplay_enabled:
 		if _battle_timer.is_stopped():
-			_battle_timer.start()
+			_battle_timer.start(_get_effective_battle_step_delay())
 	else:
 		_battle_timer.stop()
 
@@ -258,7 +259,7 @@ func _start_battle() -> void:
 
 	# In autoplay mode, start the first step after a delay.
 	if autoplay_enabled:
-		_battle_timer.start()
+		_battle_timer.start(_get_effective_battle_step_delay())
 
 
 func _on_battle_timer_timeout() -> void:
@@ -296,7 +297,7 @@ func _execute_battle_step() -> void:
 
 	# Keep stepping only while autoplay is enabled.
 	if autoplay_enabled:
-		_battle_timer.start()
+		_battle_timer.start(_get_effective_battle_step_delay())
 
 
 func _end_game(step_result: Dictionary) -> void:
@@ -354,3 +355,7 @@ func get_current_phase_label() -> String:
 		GamePhase.GAME_OVER:
 			return "Game Over"
 	return "Unknown"
+
+
+func _get_effective_battle_step_delay() -> float:
+	return maxf(battle_step_delay_seconds, MIN_BATTLE_STEP_DELAY_SECONDS)

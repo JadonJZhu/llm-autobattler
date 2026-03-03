@@ -20,3 +20,5 @@ gut-docs
 TODO.md
 
 perspective-normalization-plan.md
+
+*.pyc

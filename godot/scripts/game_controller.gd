@@ -17,6 +17,7 @@ const REFLECTION_GAME_INTERVAL: int = 2
 const REASONING_SUMMARY_MAX_CHARS: int = 275
 const DEFAULT_PUZZLE_PATH: String = "res://puzzles/puzzle_suite.json"
 const ABLATION_MAX_API_ERRORS: int = 5
+const CLI_MINI_CONFIG_LABELS: Array[String] = ["I0_E0_R0", "I1_E1_R1"]
 const PUZZLE_LOADER_SCRIPT = preload("res://scripts/puzzle_loader.gd")
 const PUZZLE_RUNNER_SCRIPT = preload("res://scripts/puzzle_runner.gd")
 const ABLATION_RUNNER_SCRIPT = preload("res://scripts/ablation_runner.gd")
@@ -40,6 +41,8 @@ var _mini_ablation_active: bool = false
 var _active_puzzle_scenario = null
 var _opponent_placements_queue: Array[Dictionary] = []
 var _ablation_api_error_count: int = 0
+var _cli_ablation_mode: bool = false
+var _cli_output_prefix: String = ""
 
 
 func _ready() -> void:
@@ -48,6 +51,12 @@ func _ready() -> void:
 	_connect_signals()
 	_setup_instructions_menu()
 	LlmClient.set_mode_config(_mode_config)
+
+	var cli_args: Dictionary = _parse_cli_args()
+	if bool(cli_args.get("ablation", false)) or bool(cli_args.get("mini_ablation", false)):
+		_start_cli_ablation(cli_args)
+		return
+
 	_start_game()
 
 
@@ -442,7 +451,7 @@ func _setup_puzzle_system() -> void:
 
 
 func start_ablation(max_attempts_per_puzzle: int = 10,
-		puzzle_path: String = DEFAULT_PUZZLE_PATH) -> void:
+		puzzle_path: String = DEFAULT_PUZZLE_PATH, configs: Array = []) -> void:
 	var puzzles: Array = _puzzle_loader.load_puzzles(puzzle_path)
 	if puzzles.is_empty():
 		shop_ui.update_status("No puzzles loaded. Check puzzle_suite.json.")
@@ -452,14 +461,15 @@ func start_ablation(max_attempts_per_puzzle: int = 10,
 	_puzzle_mode_enabled = true
 	_ablation_api_error_count = 0
 	turn_manager.set_autoplay(true)
+	turn_manager.battle_step_delay_seconds = 0.0
 	shop_ui.disable_all_shop_buttons()
-	var started: bool = _ablation_runner.start(puzzles, max_attempts_per_puzzle)
+	var started: bool = _ablation_runner.start(puzzles, max_attempts_per_puzzle, configs)
 	if not started:
 		_puzzle_mode_enabled = false
 
 
 func start_mini_ablation(max_attempts_per_puzzle: int = 3,
-		puzzle_path: String = DEFAULT_PUZZLE_PATH) -> void:
+		puzzle_path: String = DEFAULT_PUZZLE_PATH, configs: Array = []) -> void:
 	var puzzles: Array = _puzzle_loader.load_puzzles(puzzle_path)
 	if puzzles.is_empty():
 		shop_ui.update_status("No puzzles loaded. Check puzzle_suite.json.")
@@ -471,10 +481,13 @@ func start_mini_ablation(max_attempts_per_puzzle: int = 3,
 		return
 
 	var mini_configs: Array = _build_mini_mode_configs()
+	if not configs.is_empty():
+		mini_configs = configs
 	_mini_ablation_active = true
 	_puzzle_mode_enabled = true
 	_ablation_api_error_count = 0
 	turn_manager.set_autoplay(true)
+	turn_manager.battle_step_delay_seconds = 0.0
 	shop_ui.disable_all_shop_buttons()
 	var started: bool = _ablation_runner.start(subset, max_attempts_per_puzzle, mini_configs)
 	if not started:
@@ -563,7 +576,9 @@ func _on_ablation_completed(results: Dictionary) -> void:
 		_puzzle_runner.stop()
 	_active_puzzle_scenario = null
 	_opponent_placements_queue.clear()
-	var filename_prefix: String = "mini_ablation" if is_mini_run else "ablation"
+	var filename_prefix: String = _cli_output_prefix
+	if filename_prefix.is_empty():
+		filename_prefix = "mini_ablation" if is_mini_run else "ablation"
 	var run_label: String = "Mini ablation" if is_mini_run else "Ablation"
 	var log_path: String = _puzzle_logger.save_ablation_results(results, filename_prefix)
 	if terminated_early:
@@ -576,6 +591,13 @@ func _on_ablation_completed(results: Dictionary) -> void:
 		shop_ui.update_status(
 			"%s complete. Results saved to %s" % [run_label, log_path]
 		)
+	if _cli_ablation_mode:
+		var absolute_log_path: String = ""
+		if not log_path.is_empty():
+			absolute_log_path = ProjectSettings.globalize_path(log_path)
+		print("ABLATION_OUTPUT_PATH:%s" % absolute_log_path)
+		var exit_code: int = 1 if terminated_early or absolute_log_path.is_empty() else 0
+		get_tree().quit(exit_code)
 
 
 func _build_mini_puzzle_subset(puzzles: Array) -> Array:
@@ -602,6 +624,111 @@ func _build_mini_mode_configs() -> Array:
 	full.reflection_enabled = true
 
 	return [baseline, full]
+
+
+func _parse_cli_args() -> Dictionary:
+	var parsed: Dictionary = {
+		"ablation": false,
+		"mini_ablation": false,
+		"config": "",
+		"max_attempts": 10,
+		"puzzle_path": DEFAULT_PUZZLE_PATH,
+		"output_prefix": "",
+	}
+	var args: PackedStringArray = OS.get_cmdline_user_args()
+	var i: int = 0
+	while i < args.size():
+		var arg: String = args[i]
+		match arg:
+			"--ablation":
+				parsed["ablation"] = true
+			"--mini-ablation":
+				parsed["mini_ablation"] = true
+			"--config":
+				if i + 1 < args.size():
+					parsed["config"] = String(args[i + 1]).strip_edges()
+					i += 1
+			"--max-attempts":
+				if i + 1 < args.size():
+					var attempt_text: String = String(args[i + 1]).strip_edges()
+					if attempt_text.is_valid_int():
+						parsed["max_attempts"] = maxi(1, int(attempt_text))
+					else:
+						push_warning("Invalid --max-attempts value: %s (using default 10)." % attempt_text)
+					i += 1
+			"--puzzle-path":
+				if i + 1 < args.size():
+					parsed["puzzle_path"] = String(args[i + 1]).strip_edges()
+					i += 1
+			"--output-prefix":
+				if i + 1 < args.size():
+					parsed["output_prefix"] = String(args[i + 1]).strip_edges()
+					i += 1
+		i += 1
+	return parsed
+
+
+func _start_cli_ablation(cli_args: Dictionary) -> void:
+	_cli_ablation_mode = true
+	_cli_output_prefix = str(cli_args.get("output_prefix", ""))
+
+	var run_mini: bool = bool(cli_args.get("mini_ablation", false))
+	var run_full: bool = bool(cli_args.get("ablation", false))
+	if run_mini and run_full:
+		push_warning("Both --ablation and --mini-ablation were passed; defaulting to --mini-ablation.")
+		run_full = false
+
+	var config_label: String = str(cli_args.get("config", "")).strip_edges()
+	var filtered_configs: Array = []
+	if not config_label.is_empty():
+		var config: LlmModeConfig = _build_config_from_label(config_label)
+		if config == null:
+			push_error("Invalid --config label: %s" % config_label)
+			get_tree().quit(1)
+			return
+		if run_mini and not CLI_MINI_CONFIG_LABELS.has(config_label):
+			push_error("Mini ablation only supports configs: %s" % ", ".join(CLI_MINI_CONFIG_LABELS))
+			get_tree().quit(1)
+			return
+		filtered_configs.append(config)
+
+	var max_attempts: int = int(cli_args.get("max_attempts", 10))
+	var puzzle_path: String = str(cli_args.get("puzzle_path", DEFAULT_PUZZLE_PATH))
+	if run_mini:
+		start_mini_ablation(max_attempts, puzzle_path, filtered_configs)
+	else:
+		start_ablation(max_attempts, puzzle_path, filtered_configs)
+
+	if not _is_ablation_running():
+		push_error("CLI ablation failed to start.")
+		get_tree().quit(1)
+
+
+func _build_config_from_label(label: String) -> LlmModeConfig:
+	var parts: PackedStringArray = label.strip_edges().split("_")
+	if parts.size() != 3:
+		return null
+	if not parts[0].begins_with("I") or not parts[1].begins_with("E") or not parts[2].begins_with("R"):
+		return null
+	var i_text: String = parts[0].substr(1)
+	var e_text: String = parts[1].substr(1)
+	var r_text: String = parts[2].substr(1)
+	if not i_text.is_valid_int() or not e_text.is_valid_int() or not r_text.is_valid_int():
+		return null
+	var i_value: int = int(i_text)
+	var e_value: int = int(e_text)
+	var r_value: int = int(r_text)
+	if i_value < 0 or i_value > 1:
+		return null
+	if e_value < 0 or e_value > 1:
+		return null
+	if r_value < 0 or r_value > 1:
+		return null
+	var config := LlmModeConfig.new()
+	config.instructions_enabled = i_value == 1
+	config.examples_enabled = e_value == 1
+	config.reflection_enabled = r_value == 1
+	return config
 
 
 func _is_ablation_running() -> bool:

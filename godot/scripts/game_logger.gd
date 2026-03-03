@@ -162,7 +162,9 @@ func get_entries() -> Array[Dictionary]:
 
 func _generate_session_id() -> String:
 	var datetime: Dictionary = Time.get_datetime_dict_from_system()
-	return "%04d%02d%02d_%02d%02d%02d" % [
+	var milliseconds: int = int(Time.get_ticks_msec() % 1000)
+	return "%04d%02d%02d_%02d%02d%02d_%03d" % [
 		datetime["year"], datetime["month"], datetime["day"],
 		datetime["hour"], datetime["minute"], datetime["second"],
+		milliseconds,
 	]
