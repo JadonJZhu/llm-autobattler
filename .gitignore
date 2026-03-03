@@ -21,4 +21,9 @@ TODO.md
 
 perspective-normalization-plan.md
 
+__pycache__/
 *.pyc
+
+tests.txt
+
+ablation_results

@@ -132,7 +132,7 @@ Generated exhaustively by nested loops over `[false, true]` in `AblationRunner._
 ## C) Puzzle suite itself
 
 - The loaded puzzle set is effectively part of experiment configuration.
-- Current `puzzle_suite.json` has 9 puzzles (IDs across easy/medium/hard).
+- Current `puzzle_suite.json` has 3 puzzles.
 - Total puzzle/config evaluations in default suite:
   - `8 configs × 9 puzzles = 72 puzzle summaries`.
 
@@ -252,7 +252,6 @@ Each entry comes from `PuzzleRunner._build_summary(...)`:
 
 - `puzzle_id: String`
 - `description: String`
-- `difficulty: int`
 - `config: String` (e.g. `I1_E0_R1`)
 - `solved: bool`
 - `attempts_needed: int`
@@ -320,7 +319,6 @@ Per puzzle required/expected fields:
 
 - `id` (required non-empty string)
 - `description` (string, optional default empty)
-- `difficulty` (int, clamped min 1)
 - `llm_shop` (array of unit labels `A|B|C|D`, must be non-empty)
 - `llm_gold` (int, clamped min 0)
 - `opponent_shop` (array of unit labels `A|B|C|D`, must be non-empty)
@@ -439,8 +437,6 @@ Supplementary detailed traces:
 If you want richer analysis after export, compute offline:
 
 - Attempts-to-solve distribution (median, p90) per config.
-- Difficulty-stratified pass rates (easy/medium/hard buckets).
-- Per-puzzle hardness ranking by minimum achieved attempts.
 - Pairwise config deltas (`I1_E1_R0` vs `I0_E1_R0`, etc.).
 - Bootstrap confidence intervals for pass rate differences.
 
@@ -526,6 +522,6 @@ python scripts/ablation_analysis.py \
 The analysis output includes:
 
 - Per-config summary table (`pass_rate`, solved/total, mean attempts on solved puzzles)
-- Difficulty-stratified pass rates per config
+- Per-puzzle summary (`pass_rate`, solved/total, mean attempts on solved puzzles)
 - Feature impact deltas (`instructions`, `examples`, `reflection`, ON vs OFF)
 - Best/worst config by pass-rate-centered ranking

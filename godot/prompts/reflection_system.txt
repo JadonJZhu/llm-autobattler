@@ -16,5 +16,6 @@ Unit reference:
 
 Grid: 4 rows x 3 columns. LLM owns rows 0-1 (top), Human owns rows 2-3 (bottom).
 LLM units move downward (increasing row). Human units move upward (decreasing row).
+LLM units are indicated with an "L." The human's units are indicated with an "H."
 
 Respond ONLY with your bullet-point feedback. No preamble or sign-off.

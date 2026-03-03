@@ -8,3 +8,5 @@ Technical difficulties:
 - preventing data leakage between ablations 
     - examples battle tracethroughs should not explicitly state mechanics
     - serialized game history should not leak scoring mechanics (i.e. escaped vs. remaining)
+- first iteration of puzzles could mostly be beaten by random placements. had to make puzzles surprisingly difficult
+to get meaningful variation.

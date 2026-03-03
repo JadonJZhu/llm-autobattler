@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -30,6 +31,43 @@ FULL_CONFIGS = [
 ]
 MINI_CONFIGS = ["I0_E0_R0", "I1_E1_R1"]
 CONFIG_LABEL_RE = re.compile(r"^I[01]_E[01]_R[01]$")
+REPO_ROOT = Path(__file__).resolve().parents[1]
+DOTENV_PATH = REPO_ROOT / ".env"
+
+
+def _load_dotenv_values(dotenv_path: Path) -> dict[str, str]:
+    if not dotenv_path.exists():
+        return {}
+
+    values: dict[str, str] = {}
+    for raw_line in dotenv_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if not key:
+            continue
+        value = value.strip().strip("'").strip('"')
+        values[key] = value
+    return values
+
+
+def _resolve_godot_path(cli_godot_path: str | None) -> str:
+    if cli_godot_path:
+        return str(Path(cli_godot_path).expanduser())
+
+    env_godot_path = os.environ.get("GODOT_PATH", "").strip()
+    if env_godot_path:
+        return str(Path(env_godot_path).expanduser())
+
+    dotenv_godot_path = _load_dotenv_values(DOTENV_PATH).get("GODOT_PATH", "").strip()
+    if dotenv_godot_path:
+        return str(Path(dotenv_godot_path).expanduser())
+
+    raise ValueError(
+        "Missing Godot path. Pass --godot-path or set GODOT_PATH in environment/.env."
+    )
 
 
 @dataclass(frozen=True)
@@ -180,7 +218,11 @@ def _save_merged_payload(payload: dict[str, Any], output_dir: Path, mode: str) -
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run Godot ablation workers in parallel.")
-    parser.add_argument("--godot-path", required=True, help="Path to the Godot binary.")
+    parser.add_argument(
+        "--godot-path",
+        default=None,
+        help="Path to the Godot binary. If omitted, uses GODOT_PATH from env or .env.",
+    )
     parser.add_argument("--project-path", default="./godot", help="Path to the Godot project.")
     parser.add_argument("--max-attempts", type=int, default=10, help="Attempt cap per puzzle.")
     parser.add_argument("--max-parallel", type=int, default=8, help="Max concurrent workers.")
@@ -214,7 +256,10 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    godot_path = str(Path(args.godot_path).expanduser())
+    try:
+        godot_path = _resolve_godot_path(args.godot_path)
+    except ValueError as error:
+        parser.error(str(error))
     project_path = str(Path(args.project_path).expanduser().resolve())
     output_dir = Path(args.output_dir).expanduser().resolve()
     max_attempts = max(1, int(args.max_attempts))

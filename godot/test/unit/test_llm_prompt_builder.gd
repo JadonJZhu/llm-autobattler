@@ -80,7 +80,7 @@ func test_format_game_replay_basic():
 	assert_string_contains(output, "1. A attacks B")
 	assert_string_contains(output, "2. C advances")
 	assert_string_contains(output, "LLM wins")
-	assert_string_contains(output, "LLM 3 vs Human 1")
+	assert_string_contains(output, "LLM 3 vs Opponent 1")
 
 
 func test_format_game_replay_with_game_number():

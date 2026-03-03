@@ -40,6 +40,7 @@ var _battle_active_owner: UnitData.Owner
 var _battle_timer: Timer
 var _selected_unit_type: UnitData.UnitType = UnitData.UnitType.A
 var _has_selection: bool = false
+var _scripted_human_done: bool = false
 
 
 # --- Initialization ---
@@ -58,6 +59,7 @@ func initialize(board: GameBoard, llm_shop: Shop, human_shop: Shop) -> void:
 	turn_number = 0
 	battle_step_number = 0
 	_has_selection = false
+	_scripted_human_done = false
 
 	# Create battle timer
 	if _battle_timer:
@@ -189,6 +191,12 @@ func skip_prep_turn() -> void:
 	_check_prep_over()
 
 
+func set_scripted_human_done(is_done: bool) -> void:
+	## In puzzle mode, the scripted opponent may exhaust its queue before spending all gold.
+	## Marking it done prevents prep-turn deadlocks on repeated skip cycles.
+	_scripted_human_done = is_done
+
+
 func _check_prep_over() -> void:
 	var llm_can_buy: bool = _llm_shop.can_afford_any()
 	var human_can_buy: bool = _human_shop.can_afford_any()
@@ -198,7 +206,7 @@ func _check_prep_over() -> void:
 	var human_has_space: bool = not _board.get_empty_positions_for(UnitData.Owner.HUMAN).is_empty()
 
 	var llm_done: bool = not llm_can_buy or not llm_has_space
-	var human_done: bool = not human_can_buy or not human_has_space
+	var human_done: bool = _scripted_human_done or not human_can_buy or not human_has_space
 
 	if llm_done and human_done:
 		_start_battle()

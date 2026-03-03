@@ -55,6 +55,55 @@ def analyze_results_payload(payload: dict[str, Any]) -> dict[str, Any]:
     per_puzzle_rows: list[dict[str, Any]] = run_results.get("results", [])
     by_config: dict[str, dict[str, Any]] = run_results.get("by_config", {})
 
+    # puzzle_id -> aggregate metrics across all configs
+    puzzle_rollups: dict[str, dict[str, Any]] = defaultdict(
+        lambda: {
+            "puzzle_id": "",
+            "description": "",
+            "solved_count": 0,
+            "attempt_count": 0,
+            "solved_attempts": [],
+        }
+    )
+    for row in per_puzzle_rows:
+        puzzle_id = str(row.get("puzzle_id", ""))
+        if not puzzle_id:
+            continue
+        bucket = puzzle_rollups[puzzle_id]
+        bucket["puzzle_id"] = puzzle_id
+        if not bucket["description"]:
+            bucket["description"] = str(row.get("description", ""))
+        solved = bool(row.get("solved", False))
+        bucket["attempt_count"] = _safe_int(bucket.get("attempt_count")) + 1
+        if solved:
+            bucket["solved_count"] = _safe_int(bucket.get("solved_count")) + 1
+            attempts_needed = _safe_int(row.get("attempts_needed"), 0)
+            if attempts_needed > 0:
+                bucket["solved_attempts"].append(float(attempts_needed))
+
+    per_puzzle_summary: list[dict[str, Any]] = []
+    for puzzle_id, bucket in sorted(
+        puzzle_rollups.items(),
+        key=lambda item: item[0],
+    ):
+        solved_attempts: list[float] = bucket["solved_attempts"]
+        solved_only_mean_attempts = (
+            (sum(solved_attempts) / float(len(solved_attempts))) if solved_attempts else None
+        )
+        solved_count = _safe_int(bucket.get("solved_count"))
+        attempt_count = _safe_int(bucket.get("attempt_count"))
+        pass_rate = (float(solved_count) / float(attempt_count)) if attempt_count > 0 else 0.0
+        per_puzzle_summary.append(
+            {
+                "puzzle_id": puzzle_id,
+                "description": str(bucket.get("description", "")),
+                "pass_rate": pass_rate,
+                "solved_count": solved_count,
+                "attempt_count": attempt_count,
+                "mean_attempts_solved_only": solved_only_mean_attempts,
+            }
+        )
+
     summary_table: list[dict[str, Any]] = []
     for config_label in sorted(by_config.keys()):
         bucket = by_config.get(config_label, {})
@@ -67,33 +116,6 @@ def analyze_results_payload(payload: dict[str, Any]) -> dict[str, Any]:
                 "mean_attempts_solved_only": _safe_float(bucket.get("mean_attempts_solved_only")),
             }
         )
-
-    # config -> difficulty -> {"solved": int, "total": int}
-    difficulty_counts: dict[str, dict[str, dict[str, int]]] = defaultdict(
-        lambda: defaultdict(lambda: {"solved": 0, "total": 0})
-    )
-    for row in per_puzzle_rows:
-        config = str(row.get("config", ""))
-        if not config:
-            continue
-        difficulty = str(_safe_int(row.get("difficulty"), 0))
-        solved = bool(row.get("solved", False))
-        difficulty_counts[config][difficulty]["total"] += 1
-        if solved:
-            difficulty_counts[config][difficulty]["solved"] += 1
-
-    difficulty_stratified: dict[str, dict[str, dict[str, float | int]]] = {}
-    for config, per_difficulty in difficulty_counts.items():
-        difficulty_stratified[config] = {}
-        for difficulty, counts in sorted(per_difficulty.items(), key=lambda item: int(item[0])):
-            solved = counts["solved"]
-            total = counts["total"]
-            pass_rate = (float(solved) / float(total)) if total > 0 else 0.0
-            difficulty_stratified[config][difficulty] = {
-                "solved": solved,
-                "total": total,
-                "pass_rate": pass_rate,
-            }
 
     feature_samples: dict[str, dict[int, list[float]]] = {
         "instructions": {0: [], 1: []},
@@ -149,8 +171,8 @@ def analyze_results_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "max_attempts_per_puzzle": _safe_int(run_results.get("max_attempts_per_puzzle")),
         "terminated_early": bool(run_results.get("terminated_early", False)),
         "termination_reason": str(run_results.get("termination_reason", "")),
+        "per_puzzle_summary": per_puzzle_summary,
         "summary_table": summary_table,
-        "difficulty_pass_rates": difficulty_stratified,
         "feature_impact": feature_impact,
         "best_config": best_config,
         "worst_config": worst_config,
@@ -166,6 +188,24 @@ def save_analysis(analysis: dict[str, Any], output_dir: Path) -> Path:
 
 
 def _print_summary(analysis: dict[str, Any]) -> None:
+    print("Per-puzzle summary:")
+    for row in analysis.get("per_puzzle_summary", []):
+        mean_attempts_value = row.get("mean_attempts_solved_only")
+        mean_attempts_text = (
+            "{:.3f}".format(_safe_float(mean_attempts_value))
+            if mean_attempts_value is not None
+            else "n/a"
+        )
+        print(
+            "  {puzzle}: pass_rate={pass_rate:.3f} ({solved}/{total}), mean_attempts_solved_only={mean_attempts}".format(
+                puzzle=row.get("puzzle_id", ""),
+                pass_rate=_safe_float(row.get("pass_rate")),
+                solved=_safe_int(row.get("solved_count")),
+                total=_safe_int(row.get("attempt_count")),
+                mean_attempts=mean_attempts_text,
+            )
+        )
+
     print("Ablation summary:")
     for row in analysis.get("summary_table", []):
         print(

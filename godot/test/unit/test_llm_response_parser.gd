@@ -95,11 +95,11 @@ func test_parse_negative_coords():
 # D. Custom valid_rows
 # =============================================================================
 
-func test_parse_with_human_valid_rows():
+func test_parse_with_opponent_valid_rows():
 	parser.valid_rows = [2, 3]
 	var success := parser.parse_place_command("PLACE: A (2, 1)")
-	assert_eq(success["unit_type"], UnitData.UnitType.A, "Row 2 should be valid with human rows")
+	assert_eq(success["unit_type"], UnitData.UnitType.A, "Row 2 should be valid with opponent rows")
 	assert_eq(success["position"], Vector2i(2, 1))
 
 	var fail := parser.parse_place_command("PLACE: A (0, 1)")
-	assert_eq(fail, {}, "Row 0 should fail with human valid_rows [2, 3]")
+	assert_eq(fail, {}, "Row 0 should fail with opponent valid_rows [2, 3]")

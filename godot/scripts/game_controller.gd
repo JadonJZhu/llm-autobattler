@@ -100,6 +100,12 @@ func _start_game() -> void:
 	board_ui.clear()
 	board_ui.initialize()
 	turn_manager.initialize(game_board, _llm_shop, _human_shop)
+	turn_manager.set_scripted_human_done(
+		_puzzle_mode_enabled
+		and _puzzle_runner != null
+		and _puzzle_runner.is_running()
+		and _opponent_placements_queue.is_empty()
+	)
 
 	shop_ui.setup(_llm_shop, _human_shop)
 	shop_ui.clear_reasoning_summary()
@@ -410,6 +416,7 @@ func _apply_scripted_opponent_turn() -> void:
 
 	var placement: Dictionary = _puzzle_runner.consume_next_opponent_placement()
 	_opponent_placements_queue = _puzzle_runner.get_opponent_queue_snapshot()
+	turn_manager.set_scripted_human_done(_opponent_placements_queue.is_empty())
 	if placement.is_empty():
 		shop_ui.update_status("Scripted opponent has no remaining placements. Skipping turn.")
 		turn_manager.skip_prep_turn()

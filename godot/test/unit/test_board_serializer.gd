@@ -16,8 +16,7 @@ func test_empty_board_serialization():
 	# All cells should be empty markers "."
 	assert_string_contains(output, ".")
 	# Score should be all zeros
-	assert_string_contains(output, "LLM 0 (0 remaining + 0 escaped)")
-	assert_string_contains(output, "Human 0 (0 remaining + 0 escaped)")
+	assert_string_contains(output, "Score Summary: LLM 0 | Opponent 0")
 
 
 # =============================================================================
@@ -30,7 +29,7 @@ func test_single_llm_unit():
 	}
 	var output := BoardSerializer.serialize_snapshot(snapshot)
 	assert_string_contains(output, "La", "LLM A unit should show as 'La'")
-	assert_string_contains(output, "LLM 1 (1 remaining + 0 escaped)")
+	assert_string_contains(output, "Score Summary: LLM 1 | Opponent 0")
 
 
 # =============================================================================
@@ -43,7 +42,7 @@ func test_single_human_unit():
 	}
 	var output := BoardSerializer.serialize_snapshot(snapshot)
 	assert_string_contains(output, "Hb", "Human B unit should show as 'Hb'")
-	assert_string_contains(output, "Human 1 (1 remaining + 0 escaped)")
+	assert_string_contains(output, "Score Summary: LLM 0 | Opponent 1")
 
 
 # =============================================================================
@@ -64,8 +63,7 @@ func test_full_board_snapshot():
 	assert_string_contains(output, "Ld")
 	assert_string_contains(output, "Ha")
 	assert_string_contains(output, "Hb")
-	assert_string_contains(output, "LLM 3 (3 remaining + 0 escaped)")
-	assert_string_contains(output, "Human 2 (2 remaining + 0 escaped)")
+	assert_string_contains(output, "Score Summary: LLM 3 | Opponent 2")
 
 
 # =============================================================================
@@ -78,8 +76,7 @@ func test_meta_score_summary():
 		"__meta": { "llm_escaped": 1, "human_escaped": 2 },
 	}
 	var output := BoardSerializer.serialize_snapshot(snapshot)
-	assert_string_contains(output, "LLM 2 (1 remaining + 1 escaped)")
-	assert_string_contains(output, "Human 2 (0 remaining + 2 escaped)")
+	assert_string_contains(output, "Score Summary: LLM 2 | Opponent 2")
 
 
 # =============================================================================
@@ -91,5 +88,4 @@ func test_snapshot_without_meta():
 		Vector2i(1, 1): { "unit_type": UnitData.UnitType.B, "owner": UnitData.Owner.LLM },
 	}
 	var output := BoardSerializer.serialize_snapshot(snapshot)
-	# Score line should still appear with 0 escaped
-	assert_string_contains(output, "0 escaped")
+	assert_string_contains(output, "Score Summary: LLM 1 | Opponent 0")
