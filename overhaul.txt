@@ -1,0 +1,96 @@
+I want to secure a Research Scientist Internship at Riot Games. 
+I had a meeting with a Riot Games researcher recently after I caught her attention with a pull request to a past paper.
+We discussed various things, such as Stanford's Smallville LLM paper, their recent paper "WILT: A Multi-Turn Inductive Logic Benchmark for LLMs",
+and their need for a person proficient on Godot in their team. In a follow-up message to the researcher, I mentioned I would 
+build a project relating to multi-turn exchanges, Godot, and LLMs. My hope is to impress her with this project and show my proficiency
+in experimental design and LLM research with Godot. Your task is to help me evaluate the following improvement for this project.
+Consider experimental design principles, code complexity and feasibility, and computational costs. Suggest improvements
+if feasible.
+
+
+I plan to completely overhaul the game being played. 
+The game is being changed to a 4x3 grid "autochess" game. There are two phase: 
+1. preparation: the human chooses to place a unit. then the LLM chooses to place a unit. repeat until both run out of gold. players only place units
+on their side of the board. the LLM's side of the board is the first 2 rows (2x3 grid). the human's side of the board is the last 2 rows (2x3 grid). on each turn,
+players have up to 3 gold to spend. There are four types of units: A, B, C, and D. A, B, and C units each cost 1 gold. D units cost 2 gold. Players select from 
+a randomized shop of three types of units (three of the set of four types of units). Players can purchase multiple of one type of unit in a game.
+2. battle: the units automatically enter battle. no human or LLM interference is allowed. battle occurs in discrete stages. there are 4 types of units:
+"A", "B", "C", and "D" on its turn, an A unit checks if there is a unit facing it (for LLM, this is a unit in the cell directly below; for human, this is 
+a unit in the cell directly above). if there is, the unit is removed from the board and A's turn ends. if there is not a unit, A advances one cell in the
+direction it faces. on B's turn, it follows the same logic for removal, except that it only checks cells diagonally left (i.e. for LLM, these are the 
+two units to the direct left of the cell directly below it; for the human, the direct left of the cell directly above it). If the B unit is on the leftmost
+side of the grid, the B unit is incapable of removing units. In this case, or in the case where there is no unit in the checked cell, the B unit advances
+one step. The C unit is identical to the B unit, except that it checks diagonal right instead of diagonal left. Units do not advance if they are at the edge
+of the board. the D unit is a uniquely ranged unit--on D's turn, the D unit simply checks the board for the closest enemy unit and removes it. Now that
+I've described the mechanics of each unit, I will describe how each battle should progress. The LLM always has the first move. On the LLM's move, its existing
+units are checked in order of "A", "B", "C" and "D." Thus, A units always go first; if none, then B units; if none, then C units, if none, then D units. 
+Once the unit takes its turn (as described previously), the human has a move. The human acts in the exact same manner (A, B, C, and D). Repeat until one side
+has no units standing. The other player wins. If both sides cannot make any more valid moves, but still have units remaining, then the game ends in a tie. 
+Upon user interaction, the game should automatically restart, resetting the state to the preparation phase. 
+
+Your task is to write a detailed step-by-step instructions to revise the existing codebase to implement this game. Ask me any clarifying questions as necessary.
+
+
+
+## EXPERIMENTAL MODES 
+
+I want to implement the following LLM modes that could be toggled via 3 switches in the user interface for the LLM. 
+
+LLM configurations: 
+Mode 1: Instruction.
+Without instructions: Told to play on its own and figure out strategies and the mechanics of the units and win conditions.
+The only instructions it is given is the "LLM API", i.e. how it can buy and place units. 
+Its explicit goal is to win by maximizing its score. No game instructions are given.
+With instructions: Given detailed instructions on the game's mechanics and win conditions.
+
+Mode 2: Examples.
+Without examples: Nothing is given.
+With examples: The LLM is given three examples tracing through starting boards and each step of the battle.
+
+Mode 3: Reflection helper.
+Without reflection helper: Nothing is given.
+With reflection helper: the reflection helper is another LLM that is given game history and the LLM's previous reasoning. The
+reflection helper is told to provide feedback on the LLM's reasoning to help it improve, such as 
+whether or not it is failing by repeating strategies ineffectively or not understanding the game mechanics. 
+The reflection helper is encouraged to help propose hypotheses about game mechanics or strategies. The reflection helper
+is triggered every 5 games and provided the game history of the past 5 games. 
+
+Thus, we produce 2^3 = 8 modes of LLMs with these, and thus each mode's prmopt section should be compatible with the other
+(i.e. the wording of the examples could work when following either instructions or no instructions). Note that ALL 
+of the LLM modes are given past game history to learn from. You may refer to the past game history already implemented in the code. 
+
+A later goal is to run an experiment where I pit these modes against each other 
+(LLM vs. LLM) to run a scientific experiment with ablation, identifying which LLMs prevail and fail. 
+
+Your task is to help me evaluate the following improvement for this project.
+Consider experimental design principles, code complexity and feasibility, computational costs, and research impact. Suggest improvements if feasible.
+
+
+
+
+Testing Strategy
+Core game logic lives in pure RefCounted classes with zero scene-tree dependencies. This means you can get high-impact regression coverage with low-complexity tests using GUT (Godot Unit Test framework).
+
+Tier 1: Highest Impact, Lowest Cost
+These are pure unit tests — instantiate with .new(), no scene tree needed:
+
+1. battle_engine.gd + battle_snapshot.gd — This is the #1 target. Battle is deterministic, so you can construct a BattleSnapshot with a hand-crafted units dictionary, call execute_step() repeatedly, and assert exact outcomes. Test cases:
+
+Each unit type's attack/advance/escape behavior (A straight, B diagonal-left, C diagonal-right, D ranged manhattan)
+D tie-breaking (left-to-right, top-to-bottom)
+Stalemate detection
+Winner determination and scoring
+Units escaping off the board edge
+Since battles are the core game mechanic and fully deterministic, a regression suite here catches the most dangerous bugs with minimal effort.
+
+2. llm_response_parser.gd — Pure string-in, dict-out. Table-driven tests with valid commands, malformed inputs, out-of-bounds coords, edge cases. This is critical because a parsing regression means the LLM player silently falls back to random moves.
+
+3. shop.gd — Use Shop.new() + manually set available_types (avoid create_randomized()). Test gold deduction, can_afford with missing types, purchasing when broke, can_afford_any.
+
+4. board_serializer.gd — serialize_snapshot() is a static pure function. Feed it a dictionary, assert the ASCII output. Important because the LLM's decisions depend on seeing a correct board representation.
+
+Tier 2: Moderate Impact, Moderate Cost
+5. llm_prompt_builder.gd — build_system_prompt() and format_game_replay() are pure.
+
+
+Visualizing LLM thinking:

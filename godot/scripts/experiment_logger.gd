@@ -4,7 +4,7 @@ extends RefCounted
 ## Separated from GameLogger so that experiment-specific concerns don't
 ## pollute the core game logging singleton.
 
-const LOG_DIRECTORY: String = "user://game_logs/"
+const LOG_CONSTANTS = preload("res://scripts/log_constants.gd")
 
 var _results: Array[Dictionary] = []
 
@@ -24,8 +24,8 @@ func log_game(game_number: int, llm_config_label: String,
 
 
 func save_log(filename: String) -> void:
-	var file_path: String = LOG_DIRECTORY + filename
-	DirAccess.make_dir_recursive_absolute(LOG_DIRECTORY)
+	var file_path: String = LOG_CONSTANTS.LOG_DIRECTORY + filename
+	DirAccess.make_dir_recursive_absolute(LOG_CONSTANTS.LOG_DIRECTORY)
 	var file := FileAccess.open(file_path, FileAccess.WRITE)
 	if file == null:
 		push_error("ExperimentLogger: Failed to open log file: " + file_path)

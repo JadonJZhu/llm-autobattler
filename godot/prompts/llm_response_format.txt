@@ -1,0 +1,6 @@
+RESPONSE FORMAT:
+Think through your reasoning, then end your response with exactly this line:
+PLACE: <type> (row, col)
+
+Where <type> is A, B, C, or D, and row is 0 or 1 (your rows), col is 0, 1, or 2.
+The PLACE line must be the last non-empty line of your response.

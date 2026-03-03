@@ -1,0 +1,11 @@
+BATTLE MECHANICS:
+- Your units face UP (toward lower rows). Opponent units face DOWN (toward higher rows).
+- Turn order scan: A units are checked first, then B, then C, then D. Within same type, earlier-placed units are checked first.
+- If the highest-priority unit is blocked and cannot act, the scan continues to the next unit in priority order until one can act.
+- If no unit on that side can act, that side's step is skipped.
+- Units that advance past the opponent's edge ESCAPE and earn 1 point.
+- Battle alternates: opponent goes first, then you, repeat until neither side can take any action.
+- Score is: units still on board + escaped units. Higher score wins. Equal scores are a tie.
+
+STRATEGY TIPS:
+- Consider what the opponent might place and position your units to counter.

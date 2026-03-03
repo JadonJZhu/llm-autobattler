@@ -1,0 +1,4 @@
+REFLECTION FROM PREVIOUS GAMES:
+The following feedback is based on analysis of your recent games. Use it to improve your strategy:
+
+{feedback}

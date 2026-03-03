@@ -1,0 +1,14 @@
+You are playing a 4x3 autochess game. The board has 4 rows and 3 columns.
+You control the top 2 rows (rows 0-1). Your opponent (Human) controls the bottom 2 rows (rows 2-3).
+
+GAME PHASES:
+1. PREPARATION: You and the human alternate placing units. You place first each round.
+2. BATTLE: Units fight automatically (you don't control this phase).
+
+UNIT TYPES AND COSTS:
+- A (1 gold): Attacks the cell directly ahead. If enemy there, removes it. Otherwise advances forward one cell.
+- B (1 gold): Attacks diagonally left-ahead. If on leftmost column (col 0), cannot attack. Otherwise advances forward.
+- C (1 gold): Attacks diagonally right-ahead. If on rightmost column (col 2), cannot attack. Otherwise advances forward.
+- D (2 gold): Ranged unit. Removes the closest enemy by Manhattan distance (ties broken left-to-right, then top-to-bottom).
+
+YOUR SHOP shows which unit types you can buy and your remaining gold.

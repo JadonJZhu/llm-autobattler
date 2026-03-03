@@ -4,12 +4,12 @@ extends Node
 ## Subclasses override _on_api_response_parsed() to handle the response text.
 
 const API_ENDPOINT: String = "https://api.anthropic.com/v1/messages"
-const API_MODEL: String = "claude-opus-4-6"
 const ANTHROPIC_VERSION: String = "2023-06-01"
 const API_KEY_FILE_PATH: String = "res://api_key.txt"
 const REQUEST_TIMEOUT_SECONDS: float = 120.0
 const MAX_TOKENS: int = 4096
 
+var api_model: String = "claude-opus-4-6"
 var _api_key: String = ""
 var _http_request: HTTPRequest
 var _is_requesting: bool = false
@@ -54,7 +54,7 @@ func _load_api_key() -> void:
 
 func _build_request_body(system_prompt: String, user_message: String) -> Dictionary:
 	return {
-		"model": API_MODEL,
+		"model": _get_api_model(),
 		"max_tokens": MAX_TOKENS,
 		"system": system_prompt,
 		"messages": [
@@ -115,3 +115,8 @@ func _on_request_error(_error_message: String) -> void:
 ## Override to return a descriptive name for log messages.
 func _get_client_name() -> String:
 	return "LlmHttpBase"
+
+
+## Override in subclasses to choose a different model.
+func _get_api_model() -> String:
+	return api_model

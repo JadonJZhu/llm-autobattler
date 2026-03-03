@@ -9,6 +9,7 @@ signal human_llm_request_failed(error_message: String)
 var _mode_config: LlmModeConfig = LlmModeConfig.new()
 var _prompt_builder: LlmPromptBuilder = LlmPromptBuilder.new()
 var _response_parser: LlmResponseParser = LlmResponseParser.new()
+var _prompt_loader = preload("res://scripts/prompt_loader.gd").new()
 
 
 func _ready() -> void:
@@ -71,48 +72,19 @@ func _build_human_system_prompt() -> String:
 
 
 func _build_human_role_section() -> String:
-	return "You are playing a 4x3 autochess game. The board has 4 rows and 3 columns.
-You control the bottom 2 rows (rows 2-3). Your opponent (LLM) controls the top 2 rows (rows 0-1).
-
-GAME PHASES:
-1. PREPARATION: You and the opponent alternate placing units. The opponent places first each round.
-2. BATTLE: Units fight automatically (you don't control this phase).
-
-UNIT TYPES AND COSTS:
-- A (1 gold): Attacks the cell directly ahead. If enemy there, removes it. Otherwise advances forward one cell.
-- B (1 gold): Attacks diagonally left-ahead. If on leftmost column (col 0), cannot attack. Otherwise advances forward.
-- C (1 gold): Attacks diagonally right-ahead. If on rightmost column (col 2), cannot attack. Otherwise advances forward.
-- D (2 gold): Ranged unit. Removes the closest enemy by Manhattan distance (ties broken left-to-right, then top-to-bottom).
-
-YOUR SHOP shows which unit types you can buy and your remaining gold."
+	return _prompt_loader.load_prompt("human_role.txt")
 
 
 func _build_human_rules_section() -> String:
-	return "BATTLE MECHANICS:
-- Your units face UP (toward lower rows). Opponent units face DOWN (toward higher rows).
-- Turn order scan: A units are checked first, then B, then C, then D. Within same type, earlier-placed units are checked first.
-- If the highest-priority unit is blocked and cannot act, the scan continues to the next unit in priority order until one can act.
-- If no unit on that side can act, that side's step is skipped.
-- Units that advance past the opponent's edge ESCAPE and earn 1 point.
-- Battle alternates: opponent goes first, then you, repeat until neither side can take any action.
-- Score is: units still on board + escaped units. Higher score wins. Equal scores are a tie.
-
-STRATEGY TIPS:
-- Consider what the opponent might place and position your units to counter."
+	return _prompt_loader.load_prompt("human_rules.txt")
 
 
 func _build_human_examples_section() -> String:
-	return "EXAMPLES:
-(Example battle traces will be provided here in future updates.)"
+	return _prompt_loader.load_prompt("human_examples.txt")
 
 
 func _build_human_response_format() -> String:
-	return "RESPONSE FORMAT:
-Think through your reasoning, then end your response with exactly this line:
-PLACE: <type> (row, col)
-
-Where <type> is A, B, C, or D, and row is 2 or 3 (your rows), col is 0, 1, or 2.
-The PLACE line must be the last non-empty line of your response."
+	return _prompt_loader.load_prompt("human_response_format.txt")
 
 
 func _build_human_user_message(board: GameBoard, human_shop: Shop, turn_number: int,

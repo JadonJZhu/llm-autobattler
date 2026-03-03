@@ -2,7 +2,7 @@ extends Node
 ## Autoloaded singleton for logging game turns, LLM reasoning, and moves.
 ## Writes JSON logs to user://game_logs/.
 
-const LOG_DIRECTORY: String = "user://game_logs/"
+const LOG_CONSTANTS = preload("res://scripts/log_constants.gd")
 const MAX_GAME_HISTORY: int = 20
 
 var _log_entries: Array[Dictionary] = []
@@ -19,7 +19,7 @@ var _current_game_reasoning: Array[String] = []
 
 func _ready() -> void:
 	_session_id = _generate_session_id()
-	DirAccess.make_dir_recursive_absolute(LOG_DIRECTORY)
+	DirAccess.make_dir_recursive_absolute(LOG_CONSTANTS.LOG_DIRECTORY)
 
 
 func log_turn(turn_number: int, turn_data: Dictionary) -> void:
@@ -146,7 +146,7 @@ func get_recent_reasoning(count: int = -1) -> Array[String]:
 
 
 func save_log() -> void:
-	var file_path: String = LOG_DIRECTORY + "game_" + _session_id + ".json"
+	var file_path: String = LOG_CONSTANTS.LOG_DIRECTORY + "game_" + _session_id + ".json"
 	var file := FileAccess.open(file_path, FileAccess.WRITE)
 	if file == null:
 		push_error("GameLogger: Failed to open log file: " + file_path)
