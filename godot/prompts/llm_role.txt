@@ -17,7 +17,9 @@ Your objective is to outscore the opponent at game end.
 
 The mechanics of the units and final scoring may or may not be provided to you. 
 If they are not, you have to use past game tracethroughs and outcomes to infer how units behave and how scoring works.
-Either way, use past game tracethroughs and outcomes as experience to improve your strategies.
+Either way, use past game tracethroughs and outcomes as experience to improve your strategies. However,
+do not be afraid to explore new strategies to widen your experience. Take initiative to strike your 
+own balance between focusing on novel exploration versus proven strategies.
 
 STRATEGY TIPS:
 - Consider what the opponent might place and position your units to counter.
