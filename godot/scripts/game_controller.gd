@@ -70,7 +70,13 @@ func _start_game() -> void:
 	shop_ui.clear_reasoning_summary()
 	shop_ui.update_turn_label(turn_manager.get_current_phase_label())
 	_refresh_shop_ui()
-	shop_ui.update_status("Game started! LLM places first. LLM is thinking...")
+	# In fallback mode, LLM placement can complete synchronously during initialize().
+	# Only show thinking text if it is still the LLM's prep turn.
+	if (
+		turn_manager.phase == TurnManager.GamePhase.PREP
+		and turn_manager.prep_turn == TurnManager.PrepTurn.LLM
+	):
+		shop_ui.update_status("Game started! LLM places first. LLM is thinking...")
 
 
 func _on_shop_button_pressed(type: UnitData.UnitType) -> void:
