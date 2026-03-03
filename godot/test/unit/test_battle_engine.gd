@@ -314,20 +314,14 @@ func test_same_type_priority_by_placement_order():
 # =============================================================================
 
 func test_stalemate_when_no_units_can_act():
-	# Two columns of same-owner units facing each other but blocked
-	var snap := _make_snapshot([
-		{ "pos": Vector2i(1, 1), "type": UnitData.UnitType.A, "owner": UnitData.Owner.LLM, "placement_order": 0 },
-		{ "pos": Vector2i(2, 1), "type": UnitData.UnitType.A, "owner": UnitData.Owner.HUMAN, "placement_order": 0 },
-	])
-	# A at (1,1) faces enemy at (2,1) — can attack. Not stalemate yet.
 	# Need a scenario where nobody can act. B/C on edge columns blocked by friendlies:
-	var stale_snap := _make_snapshot([
+	var snap := _make_snapshot([
 		{ "pos": Vector2i(1, 0), "type": UnitData.UnitType.B, "owner": UnitData.Owner.LLM, "placement_order": 0 },
 		{ "pos": Vector2i(2, 0), "type": UnitData.UnitType.B, "owner": UnitData.Owner.HUMAN, "placement_order": 0 },
 	])
 	# LLM B at (1,0): on leftmost col, can't diag-attack. Ahead is (2,0) occupied → blocked.
 	# Human B at (2,0): on leftmost col, can't diag-attack. Ahead is (1,0) occupied → blocked.
-	assert_true(engine.is_stalemate(stale_snap), "Should be stalemate when no units can act")
+	assert_true(engine.is_stalemate(snap), "Should be stalemate when no units can act")
 
 
 func test_not_stalemate_when_action_possible():
