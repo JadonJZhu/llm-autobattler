@@ -200,4 +200,4 @@ godot/
   puzzles/               — Scripted puzzle scenarios for ablation
 ```
 
-See `CLAUDE.md` for detailed architecture documentation.
+See `TECHNICAL.md` for detailed architecture documentation.

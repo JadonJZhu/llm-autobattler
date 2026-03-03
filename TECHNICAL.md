@@ -1,32 +1,12 @@
-# CLAUDE.md — Interactive Puzzle-Solving Project
+# TECHNICAL.md — Interactive Puzzle-Solving Project
 
-## Project Overview
-
-A 4x3 autochess game built in Godot where an LLM (Claude Sonnet 4.6) competes against a human player. Both players spend gold to buy and place units during a **Prep phase**, then watch units fight automatically in a **Battle phase**. The LLM receives a full game replay of the previous match to inform its next prep decisions.
-
-The project also supports a **Puzzle-Based Ablation Mode**: the opponent follows a scripted sequence of placements, and the LLM is evaluated across all prompt configurations (`instructions`, `examples`, `reflection`) by how many attempts it needs to solve each puzzle.
+## Gameplay Rules
 
 - **Grid**: 4 rows × 3 columns. LLM occupies rows 0–1 (top); Human occupies rows 2–3 (bottom).
 - **Prep**: Players alternate placing units from a randomized shop (3 gold to start). LLM always goes first.
 - **Battle**: Deterministic. Units activate by priority (A > B > C > D, then placement order). Units advance toward the opponent's edge and escape for 1 point each.
 - **Win condition**: Score = units remaining on board + units escaped. Higher score wins.
 
-## Code Principles
-
-### SOLID
-- **Single Responsibility**: Each script handles one concern. Do not combine unrelated logic.
-- **Open/Closed**: Design systems to be extensible without modifying existing code. Use signals and composition over deep inheritance. New unit types or board layouts should not require rewriting core game logic.
-- **Liskov Substitution**: If using inheritance, subtypes must be fully substitutable for their base type without breaking behavior.
-- **Interface Segregation**: Keep node interfaces small and focused. A unit node should not expose logging methods. A UI node should not know about API payloads.
-- **Dependency Inversion**: High-level modules (turn manager, game board) should depend on abstractions, not concrete implementations. Pass dependencies via signals, exported variables, or node references — not hardcoded paths.
-
-### General Code Quality
-- Prefer composition over inheritance. Use Godot's node tree and signals as the primary coupling mechanism.
-- Keep functions short and focused. If a function does more than one thing, split it.
-- Name variables and functions clearly. Avoid abbreviations. `unit_owner` over `own`.
-- No magic numbers. Use `GridConstants` or exported variables for configurable values.
-- Handle errors explicitly. API calls, file I/O, and JSON parsing must have error handling. Do not silently swallow failures.
-- Write GDScript that follows Godot's official style guide (snake_case, typed variables where possible).
 
 ## Key File Structure
 
