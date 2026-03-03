@@ -1,4 +1,4 @@
-# Interactive Puzzle-Solving: LLM Autochess
+# LLM Autobattler
 
 A 4x3 autochess game built in Godot 4 where an LLM competes against a human player. Both players spend gold to buy and place units during a Prep phase, then watch units fight automatically in a Battle phase. The LLM receives a full game replay of the previous match to inform its next decisions.
 
