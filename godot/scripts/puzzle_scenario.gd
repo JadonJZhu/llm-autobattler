@@ -4,7 +4,6 @@ extends RefCounted
 ## Opponent placements are consumed in order during prep turns.
 
 var id: String = ""
-var description: String = ""
 var difficulty: int = 1
 
 var llm_shop_types: Array[UnitData.UnitType] = []

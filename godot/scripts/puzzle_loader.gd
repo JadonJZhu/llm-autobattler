@@ -54,7 +54,6 @@ func _parse_scenario(raw: Dictionary, index: int) -> Variant:
 
 	var scenario = PUZZLE_SCENARIO_SCRIPT.new()
 	scenario.id = id
-	scenario.description = str(raw.get("description", ""))
 	scenario.difficulty = maxi(1, int(raw.get("difficulty", 1)))
 	scenario.llm_gold = maxi(0, int(raw.get("llm_gold", Shop.STARTING_GOLD)))
 	scenario.opponent_gold = maxi(0, int(raw.get("opponent_gold", Shop.STARTING_GOLD)))

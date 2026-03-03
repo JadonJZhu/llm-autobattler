@@ -251,7 +251,6 @@ Top-level payload written by `PuzzleLogger`:
 Each entry comes from `PuzzleRunner._build_summary(...)`:
 
 - `puzzle_id: String`
-- `description: String`
 - `config: String` (e.g. `I1_E0_R1`)
 - `solved: bool`
 - `attempts_needed: int`
@@ -318,7 +317,6 @@ Loaded from JSON root:
 Per puzzle required/expected fields:
 
 - `id` (required non-empty string)
-- `description` (string, optional default empty)
 - `llm_shop` (array of unit labels `A|B|C|D`, must be non-empty)
 - `llm_gold` (int, clamped min 0)
 - `opponent_shop` (array of unit labels `A|B|C|D`, must be non-empty)

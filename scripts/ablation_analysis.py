@@ -59,7 +59,6 @@ def analyze_results_payload(payload: dict[str, Any]) -> dict[str, Any]:
     puzzle_rollups: dict[str, dict[str, Any]] = defaultdict(
         lambda: {
             "puzzle_id": "",
-            "description": "",
             "solved_count": 0,
             "attempt_count": 0,
             "solved_attempts": [],
@@ -71,8 +70,6 @@ def analyze_results_payload(payload: dict[str, Any]) -> dict[str, Any]:
             continue
         bucket = puzzle_rollups[puzzle_id]
         bucket["puzzle_id"] = puzzle_id
-        if not bucket["description"]:
-            bucket["description"] = str(row.get("description", ""))
         solved = bool(row.get("solved", False))
         bucket["attempt_count"] = _safe_int(bucket.get("attempt_count")) + 1
         if solved:
@@ -96,7 +93,6 @@ def analyze_results_payload(payload: dict[str, Any]) -> dict[str, Any]:
         per_puzzle_summary.append(
             {
                 "puzzle_id": puzzle_id,
-                "description": str(bucket.get("description", "")),
                 "pass_rate": pass_rate,
                 "solved_count": solved_count,
                 "attempt_count": attempt_count,

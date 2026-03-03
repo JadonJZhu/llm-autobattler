@@ -1,8 +1,7 @@
 {
   "puzzles": [
     {
-      "id": "medium_staggered_screen",
-      "description": "Opponent builds a staggered screen and times a rear sniper behind it.",
+      "id": "1",
       "llm_shop": ["A", "C", "B"],
       "llm_gold": 3,
       "opponent_shop": ["A", "B", "D"],
@@ -16,8 +15,7 @@
       ]
     },
     {
-      "id": "hard_triple_lane_lock",
-      "description": "Opponent seals the front, then layers rear threats to convert stalled lanes.",
+      "id": "2",
       "llm_shop": ["A", "B", "D"],
       "llm_gold": 3,
       "opponent_shop": ["A", "C", "D"],
@@ -31,8 +29,7 @@
       ]
     },
     {
-      "id": "hard_sniper_plus_diagonal",
-      "description": "Opponent opens with D, then chains diagonals and lane pressure into a dense killbox.",
+      "id": "3",
       "llm_shop": ["A", "C", "D"],
       "llm_gold": 4,
       "opponent_shop": ["D", "A", "B", "C"],

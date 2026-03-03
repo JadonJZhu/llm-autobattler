@@ -110,7 +110,6 @@ func _build_summary(solved: bool) -> Dictionary:
 
 	return {
 		"puzzle_id": scenario.id,
-		"description": scenario.description,
 		"difficulty": scenario.difficulty,
 		"config": mode_config.get_label(),
 		"solved": solved,
