@@ -16,6 +16,9 @@ const SHOP_BUTTON_SELECTED_BORDER_COLOR: Color = Color.WHITE
 const THINKING_STATUS_PREFIX: String = "LLM is thinking"
 const THINKING_DOT_INTERVAL_SECONDS: float = 0.35
 const THINKING_MAX_DOTS: int = 3
+const REASONING_HEADER_Y: float = 95.0
+const REASONING_BODY_Y: float = 118.0
+const REASONING_BODY_SIZE: Vector2 = Vector2(560.0, 120.0)
 
 var _llm_gold_label: Label
 var _llm_shop_container: HBoxContainer
@@ -23,6 +26,8 @@ var _human_gold_label: Label
 var _human_shop_container: HBoxContainer
 var _turn_label: Label
 var _status_label: Label
+var _reasoning_header_label: Label
+var _reasoning_summary_label: Label
 var _human_shop_buttons: Array[Button] = []
 var _llm_shop_buttons: Array[Button] = []
 var _human_button_by_type: Dictionary = {}  # UnitData.UnitType -> Button
@@ -62,6 +67,22 @@ func update_status(text: String) -> void:
 	_status_label.text = text
 
 
+func show_reasoning_summary(text: String) -> void:
+	var summary: String = text.strip_edges()
+	if summary.is_empty():
+		clear_reasoning_summary()
+		return
+	_reasoning_summary_label.text = summary
+	_reasoning_header_label.visible = true
+	_reasoning_summary_label.visible = true
+
+
+func clear_reasoning_summary() -> void:
+	_reasoning_summary_label.text = ""
+	_reasoning_header_label.visible = false
+	_reasoning_summary_label.visible = false
+
+
 func update_human_shop_buttons(is_human_prep: bool, human_shop: Shop) -> void:
 	for i in range(_human_shop_buttons.size()):
 		var type: UnitData.UnitType = human_shop.available_types[i]
@@ -96,6 +117,18 @@ func _build_layout() -> void:
 	_llm_shop_container = HBoxContainer.new()
 	_llm_shop_container.position = Vector2(UI_X_OFFSET, 40.0)
 	add_child(_llm_shop_container)
+
+	_reasoning_header_label = _create_label(Vector2(UI_X_OFFSET, REASONING_HEADER_Y), 0)
+	_reasoning_header_label.text = "LLM Reasoning:"
+	_reasoning_header_label.visible = false
+	add_child(_reasoning_header_label)
+
+	_reasoning_summary_label = _create_label(Vector2(UI_X_OFFSET, REASONING_BODY_Y), 0)
+	_reasoning_summary_label.size = REASONING_BODY_SIZE
+	_reasoning_summary_label.custom_minimum_size = REASONING_BODY_SIZE
+	_reasoning_summary_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_reasoning_summary_label.visible = false
+	add_child(_reasoning_summary_label)
 
 	_turn_label = _create_label(Vector2(UI_X_OFFSET, 250.0), LABEL_FONT_SIZE)
 	add_child(_turn_label)
@@ -227,7 +260,7 @@ func _process(delta: float) -> void:
 
 
 func _is_thinking_status(text: String) -> bool:
-	return text.begins_with(THINKING_STATUS_PREFIX)
+	return text.contains(THINKING_STATUS_PREFIX)
 
 
 func _start_thinking_animation(text: String) -> void:

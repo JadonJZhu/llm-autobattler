@@ -1,6 +1,10 @@
 RESPONSE FORMAT:
-Think through your reasoning, then end your response with exactly this line:
+Think through your reasoning, then include one final concise paragraph immediately before the PLACE line.
+That final paragraph must state your core rationale in 1 sentence (why this unit and this cell are best right now).
+Avoid generic closers like "This seems solid"; include specific board/shop factors.
+Then end your response with exactly this line:
 PLACE: <type> (row, col)
 
 Where <type> is A, B, C, or D, and row is 0 or 1 (your rows), col is 0, 1, or 2.
+The concise rationale paragraph must be the last paragraph before PLACE.
 The PLACE line must be the last non-empty line of your response.

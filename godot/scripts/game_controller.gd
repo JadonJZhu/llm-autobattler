@@ -14,6 +14,7 @@ extends Node2D
 # --- State ---
 
 const REFLECTION_GAME_INTERVAL: int = 5
+const REASONING_SUMMARY_MAX_CHARS: int = 275
 
 var _llm_shop: Shop
 var _human_shop: Shop
@@ -66,9 +67,10 @@ func _start_game() -> void:
 	turn_manager.initialize(game_board, _llm_shop, _human_shop)
 
 	shop_ui.setup(_llm_shop, _human_shop)
+	shop_ui.clear_reasoning_summary()
 	shop_ui.update_turn_label(turn_manager.get_current_phase_label())
 	_refresh_shop_ui()
-	shop_ui.update_status("Game started! LLM places first.")
+	shop_ui.update_status("Game started! LLM places first. LLM is thinking...")
 
 
 func _on_shop_button_pressed(type: UnitData.UnitType) -> void:
@@ -98,6 +100,7 @@ func _on_prep_turn_changed(turn: TurnManager.PrepTurn) -> void:
 
 func _trigger_llm_turn() -> void:
 	if LlmClient.has_api_key():
+		shop_ui.clear_reasoning_summary()
 		shop_ui.update_status("LLM is thinking...")
 		LlmClient.request_llm_prep(
 			game_board, _llm_shop,
@@ -126,6 +129,36 @@ func _on_llm_request_failed(error_message: String) -> void:
 
 func _on_llm_reasoning_captured(reasoning_text: String) -> void:
 	GameLogger.log_llm_reasoning(reasoning_text)
+	shop_ui.show_reasoning_summary(_extract_reasoning_summary(reasoning_text))
+
+
+func _extract_reasoning_summary(reasoning_text: String) -> String:
+	var paragraphs: PackedStringArray = reasoning_text.split("\n\n")
+	for i in range(paragraphs.size() - 1, -1, -1):
+		var candidate: String = _sanitize_reasoning_text(paragraphs[i])
+		if candidate.length() > 10:
+			return _truncate_reasoning_summary(candidate)
+	return _truncate_reasoning_summary(_sanitize_reasoning_text(reasoning_text))
+
+
+func _sanitize_reasoning_text(text: String) -> String:
+	var cleaned: String = text.strip_edges()
+	cleaned = cleaned.replace("**", "")
+	cleaned = cleaned.replace("__", "")
+	cleaned = cleaned.replace("`", "")
+	cleaned = cleaned.replace("#", "")
+	cleaned = cleaned.replace("\n", " ")
+	while cleaned.contains("  "):
+		cleaned = cleaned.replace("  ", " ")
+	if cleaned.begins_with("- "):
+		cleaned = cleaned.substr(2)
+	return cleaned
+
+
+func _truncate_reasoning_summary(text: String) -> String:
+	if text.length() <= REASONING_SUMMARY_MAX_CHARS:
+		return text
+	return "%s..." % text.left(REASONING_SUMMARY_MAX_CHARS - 3)
 
 
 func _apply_fallback_llm_prep() -> void:
