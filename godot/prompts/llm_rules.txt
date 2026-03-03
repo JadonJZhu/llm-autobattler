@@ -1,5 +1,10 @@
 BATTLE MECHANICS:
 - Your units face DOWN (toward higher rows). Opponent units face UP (toward lower rows).
+- Unit behavior details:
+  - A (1 gold): Attacks the cell directly ahead. If an enemy is there, removes it. Otherwise advances forward one cell.
+  - B (1 gold): Attacks diagonally left-ahead. If on leftmost column (col 0), cannot attack. Otherwise advances forward.
+  - C (1 gold): Attacks diagonally right-ahead. If on rightmost column (col 2), cannot attack. Otherwise advances forward.
+  - D (2 gold): Ranged unit. Removes the closest enemy by Manhattan distance (ties broken left-to-right, then top-to-bottom).
 - Turn order scan: A units are checked first, then B, then C, then D. Within same type, earlier-placed units are checked first.
 - If the highest-priority unit is blocked and cannot act, the scan continues to the next unit in priority order until one can act.
 - If no unit on that side can act, that side's step is skipped.

@@ -108,7 +108,7 @@
     {
       "id": "hard_full_pressure",
       "description": "Opponent executes a four-gold scripted sequence with mixed threats.",
-      "difficulty": 3,
+      "difficulty": 4,
       "llm_shop": ["A", "B", "D"],
       "llm_gold": 3,
       "opponent_shop": ["D", "A", "C"],

@@ -24,8 +24,8 @@ const OWNER_PREFIXES: Dictionary = {
 const ROW_SIDE_LABELS: Dictionary = {
 	0: "(LLM)",
 	1: "(LLM)",
-	2: "(Human)",
-	3: "(Human)",
+	2: "(Opponent)",
+	3: "(Opponent)",
 }
 
 
@@ -58,9 +58,8 @@ static func serialize_snapshot(snapshot: Dictionary) -> String:
 	var score_summary: Dictionary = _compute_score_summary(snapshot)
 	lines.append("")
 	lines.append(
-		"Score Summary: LLM %d (%d remaining + %d escaped) | Human %d (%d remaining + %d escaped)" % [
-			score_summary["llm_score"], score_summary["llm_remaining"], score_summary["llm_escaped"],
-			score_summary["human_score"], score_summary["human_remaining"], score_summary["human_escaped"],
+		"Score Summary: LLM %d | Opponent %d" % [
+			score_summary["llm_score"], score_summary["human_score"],
 		]
 	)
 	return "\n".join(lines)

@@ -13,7 +13,7 @@ extends Node2D
 
 # --- State ---
 
-const REFLECTION_GAME_INTERVAL: int = 5
+const REFLECTION_GAME_INTERVAL: int = 2
 const REASONING_SUMMARY_MAX_CHARS: int = 275
 const DEFAULT_PUZZLE_PATH: String = "res://puzzles/puzzle_suite.json"
 const PUZZLE_LOADER_SCRIPT = preload("res://scripts/puzzle_loader.gd")
@@ -35,6 +35,7 @@ var _puzzle_runner: Node
 var _ablation_runner: Node
 var _puzzle_logger = PUZZLE_LOGGER_SCRIPT.new()
 var _puzzle_mode_enabled: bool = false
+var _mini_ablation_active: bool = false
 var _active_puzzle_scenario = null
 var _opponent_placements_queue: Array[Dictionary] = []
 
@@ -419,6 +420,7 @@ func start_ablation(max_attempts_per_puzzle: int = 10,
 		shop_ui.update_status("No puzzles loaded. Check puzzle_suite.json.")
 		return
 
+	_mini_ablation_active = false
 	_puzzle_mode_enabled = true
 	turn_manager.set_autoplay(true)
 	shop_ui.disable_all_shop_buttons()
@@ -427,8 +429,32 @@ func start_ablation(max_attempts_per_puzzle: int = 10,
 		_puzzle_mode_enabled = false
 
 
+func start_mini_ablation(max_attempts_per_puzzle: int = 3,
+		puzzle_path: String = DEFAULT_PUZZLE_PATH) -> void:
+	var puzzles: Array = _puzzle_loader.load_puzzles(puzzle_path)
+	if puzzles.is_empty():
+		shop_ui.update_status("No puzzles loaded. Check puzzle_suite.json.")
+		return
+
+	var subset: Array = _build_mini_puzzle_subset(puzzles)
+	if subset.is_empty():
+		shop_ui.update_status("Mini ablation could not build a puzzle subset.")
+		return
+
+	var mini_configs: Array = _build_mini_mode_configs()
+	_mini_ablation_active = true
+	_puzzle_mode_enabled = true
+	turn_manager.set_autoplay(true)
+	shop_ui.disable_all_shop_buttons()
+	var started: bool = _ablation_runner.start(subset, max_attempts_per_puzzle, mini_configs)
+	if not started:
+		_puzzle_mode_enabled = false
+		_mini_ablation_active = false
+
+
 func stop_ablation() -> void:
 	_puzzle_mode_enabled = false
+	_mini_ablation_active = false
 	if _ablation_runner != null:
 		_ablation_runner.stop()
 	if _puzzle_runner != null:
@@ -494,8 +520,38 @@ func _on_ablation_progress(config_label: String, puzzle_id: String,
 
 
 func _on_ablation_completed(results: Dictionary) -> void:
+	var is_mini_run: bool = _mini_ablation_active
 	_puzzle_mode_enabled = false
-	var log_path: String = _puzzle_logger.save_ablation_results(results)
+	_mini_ablation_active = false
+	var filename_prefix: String = "mini_ablation" if is_mini_run else "ablation"
+	var run_label: String = "Mini ablation" if is_mini_run else "Ablation"
+	var log_path: String = _puzzle_logger.save_ablation_results(results, filename_prefix)
 	shop_ui.update_status(
-		"Ablation complete. Results saved to %s" % log_path
+		"%s complete. Results saved to %s" % [run_label, log_path]
 	)
+
+
+func _build_mini_puzzle_subset(puzzles: Array) -> Array:
+	var subset: Array = []
+	var seen_difficulties: Dictionary = {}
+	for scenario in puzzles:
+		var difficulty: int = int(scenario.difficulty)
+		if seen_difficulties.has(difficulty):
+			continue
+		seen_difficulties[difficulty] = true
+		subset.append(scenario)
+	return subset
+
+
+func _build_mini_mode_configs() -> Array:
+	var baseline := LlmModeConfig.new()
+	baseline.instructions_enabled = false
+	baseline.examples_enabled = false
+	baseline.reflection_enabled = false
+
+	var full := LlmModeConfig.new()
+	full.instructions_enabled = true
+	full.examples_enabled = true
+	full.reflection_enabled = true
+
+	return [baseline, full]

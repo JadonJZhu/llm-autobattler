@@ -6,10 +6,12 @@ GAME PHASES:
 2. BATTLE: Units fight automatically (you don't control this phase).
 
 UNIT TYPES AND COSTS:
-- A (1 gold): Attacks the cell directly ahead. If enemy there, removes it. Otherwise advances forward one cell.
-- B (1 gold): Attacks diagonally left-ahead. If on leftmost column (col 0), cannot attack. Otherwise advances forward.
-- C (1 gold): Attacks diagonally right-ahead. If on rightmost column (col 2), cannot attack. Otherwise advances forward.
-- D (2 gold): Ranged unit. Removes the closest enemy by Manhattan distance (ties broken left-to-right, then top-to-bottom).
+- A (1 gold)
+- B (1 gold)
+- C (1 gold)
+- D (2 gold)
 
 You can see BOTH shops: your shop/gold and the opponent's shop/gold.
-Use all visible information, including the opponent's shop options and gold count, to make strategic placements.
+Your objective is to outscore the opponent at game end.
+The exact in-battle behavior of units is intentionally not provided here.
+Use game replays and outcomes to infer how units behave over repeated games.

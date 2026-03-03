@@ -332,7 +332,7 @@ func _check_terminal(snapshot: BattleSnapshot, units: Dictionary, result: Dictio
 			result["event"] += " | Game over by stalemate. LLM wins on score %d-%d." % [llm_score, human_score]
 		elif human_score > llm_score:
 			result["winner"] = UnitData.Owner.HUMAN
-			result["event"] += " | Game over by stalemate. Human wins on score %d-%d." % [human_score, llm_score]
+			result["event"] += " | Game over by stalemate. Opponent wins on score %d-%d." % [human_score, llm_score]
 		else:
 			result["winner"] = null
 			result["event"] += " | Game over by stalemate. Tie on score %d-%d." % [llm_score, human_score]

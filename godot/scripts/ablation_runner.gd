@@ -17,13 +17,21 @@ var _current_config_index: int = 0
 var _current_puzzle_index: int = 0
 
 
-func start(puzzles: Array, attempt_limit: int = 10) -> bool:
+func start(puzzles: Array, attempt_limit: int = 10, configs: Array = []) -> bool:
 	if puzzles.is_empty():
 		push_error("AblationRunner: Cannot start with empty puzzle list.")
 		return false
 
 	_puzzles = puzzles
 	_configs = _build_mode_configs()
+	if not configs.is_empty():
+		_configs.clear()
+		for config in configs:
+			if config is LlmModeConfig:
+				_configs.append(config)
+	if _configs.is_empty():
+		push_error("AblationRunner: Cannot start with empty mode config list.")
+		return false
 	_results.clear()
 	_current_config_index = 0
 	_current_puzzle_index = 0

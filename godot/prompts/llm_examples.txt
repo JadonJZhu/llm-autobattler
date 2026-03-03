@@ -1,2 +1,57 @@
-EXAMPLES:
-(Example battle traces will be provided here in future updates.)
+EXAMPLES (battle trace-throughs only):
+These examples demonstrate how battles resolve from fixed start states.
+They are not prep-turn strategy advice.
+
+Example 1.
+Start-of-battle board:
+Row 0: [ . | . | . ]
+Row 1: [ A | . | . ]  (LLM)
+Row 2: [ A | . | . ]  (Opponent)
+Row 3: [ . | . | . ]
+
+Battle trace:
+1. LLM A at (1,0) removes Opponent A at (2,0).
+2. Opponent has no units left on the board. Game ends.
+
+Observed outcome: LLM wins. Final score: 1 (LLM) to 0 (Opponent)
+
+Example 2.
+Start-of-battle board:
+Row 0: [ . | . | . ]
+Row 1: [ C | . | C ]  (LLM; C at (1,0) placed before C at (1,2).)
+Row 2: [ . | A | . ]  (Opponent)
+Row 3: [ . | . | B ]  (Opponent)
+
+Battle trace:
+1. LLM C at (1,0) removes Opponent A at (2,1).
+2. Opponent B at (3,2) advances to (2,2).
+3. LLM C at (1,0) advances to (2,0).
+4. Opponent B at (2,2) cannot move. Opponent's turn skipped.
+5. LLM C at (2,0) advances to (3,0). 
+6. Opponent B at (2,2) cannot move. Opponent's turn skipped.
+7. LLM C at (2,0) advances off the board.
+8. Neither player can take action. Game ends.
+
+Observed outcome: LLM wins. Final score: 2 (LLM) to 1 (Opponent)
+
+Example 3.
+Start-of-battle board:
+Row 0: [ . | . | D ]  (LLM)
+Row 1: [ . | A | . ]  (LLM)
+Row 2: [ . | . | C ]  (Opponent)
+Row 3: [ A | . | D ]  (Opponent)
+
+Battle trace:
+1. LLM A at (1,1) advances to (2,1).
+2. Opponent A at (3,0) advances to (2,0).
+3. LLM A at (2,1) advances to (3,1).
+4. Opponent A at (2,0) advances to (1,0).
+5. LLM A at (3,1) advances off the board.
+6. Opponent A at (1,0) advances to (0,0).
+7. LLM D at (0,2) removes Opponent A at (0,0).
+8. Opponent C at (2,2) advances to (1,2).
+9. LLM D at (0,2) removes Opponent C at (1,2).
+10. Opponent D at (3,2) removes LLM D at (0,2).
+11. Neither player can take action. Game ends.
+
+Observed outcome: Tie. Final score: 1 (LLM) to 1 (Opponent)
