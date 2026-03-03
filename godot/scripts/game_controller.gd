@@ -17,6 +17,9 @@ const REFLECTION_GAME_INTERVAL: int = 2
 const REASONING_SUMMARY_MAX_CHARS: int = 275
 const DEFAULT_PUZZLE_PATH: String = "res://puzzles/puzzle_suite.json"
 const ABLATION_MAX_API_ERRORS: int = 5
+const ABLATION_RETRY_BASE_DELAY_SECONDS: float = 2.0
+const ABLATION_RETRY_MAX_DELAY_SECONDS: float = 30.0
+const ABLATION_RETRY_JITTER_SECONDS: float = 0.75
 const CLI_MINI_CONFIG_LABELS: Array[String] = ["I0_E0_R0", "I1_E1_R1"]
 const PUZZLE_LOADER_SCRIPT = preload("res://scripts/puzzle_loader.gd")
 const PUZZLE_RUNNER_SCRIPT = preload("res://scripts/puzzle_runner.gd")
@@ -41,11 +44,14 @@ var _mini_ablation_active: bool = false
 var _active_puzzle_scenario = null
 var _opponent_placements_queue: Array[Dictionary] = []
 var _ablation_api_error_count: int = 0
+var _ablation_retry_rng: RandomNumberGenerator = RandomNumberGenerator.new()
+var _ablation_retry_pending: bool = false
 var _cli_ablation_mode: bool = false
 var _cli_output_prefix: String = ""
 
 
 func _ready() -> void:
+	_ablation_retry_rng.randomize()
 	_setup_reflection_client()
 	_setup_puzzle_system()
 	_connect_signals()
@@ -168,6 +174,7 @@ func _trigger_llm_turn() -> void:
 func _on_llm_prep_response_received(unit_type: UnitData.UnitType, grid_pos: Vector2i) -> void:
 	if _is_ablation_running():
 		_ablation_api_error_count = 0
+		_ablation_retry_pending = false
 
 	var success: bool = turn_manager.apply_llm_prep_placement(unit_type, grid_pos)
 	if not success:
@@ -179,7 +186,7 @@ func _on_llm_prep_response_received(unit_type: UnitData.UnitType, grid_pos: Vect
 	_refresh_shop_ui()
 
 
-func _on_llm_request_failed(error_message: String, is_api_error: bool) -> void:
+func _on_llm_request_failed(error_message: String, is_api_error: bool, error_meta: Dictionary = {}) -> void:
 	push_error("LLM request failed: " + error_message)
 	if _is_ablation_running() and is_api_error:
 		_ablation_api_error_count += 1
@@ -196,12 +203,13 @@ func _on_llm_request_failed(error_message: String, is_api_error: bool) -> void:
 			_terminate_ablation_due_to_api_failure(failure_reason)
 			return
 
+		var delay_seconds: float = _compute_ablation_retry_delay_seconds(error_meta)
 		shop_ui.update_status(
-			"LLM API error during ablation (%d/%d). Retrying..." % [
-				_ablation_api_error_count, ABLATION_MAX_API_ERRORS
+			"LLM API error during ablation (%d/%d). Retrying in %.1fs..." % [
+				_ablation_api_error_count, ABLATION_MAX_API_ERRORS, delay_seconds
 			]
 		)
-		_trigger_llm_turn()
+		_schedule_ablation_retry(delay_seconds)
 		return
 
 	shop_ui.update_status("LLM error. Using random placement.")
@@ -467,6 +475,7 @@ func start_ablation(max_attempts_per_puzzle: int = 10,
 	_mini_ablation_active = false
 	_puzzle_mode_enabled = true
 	_ablation_api_error_count = 0
+	_ablation_retry_pending = false
 	turn_manager.set_autoplay(true)
 	turn_manager.battle_step_delay_seconds = 0.0
 	shop_ui.disable_all_shop_buttons()
@@ -493,6 +502,7 @@ func start_mini_ablation(max_attempts_per_puzzle: int = 3,
 	_mini_ablation_active = true
 	_puzzle_mode_enabled = true
 	_ablation_api_error_count = 0
+	_ablation_retry_pending = false
 	turn_manager.set_autoplay(true)
 	turn_manager.battle_step_delay_seconds = 0.0
 	shop_ui.disable_all_shop_buttons()
@@ -506,6 +516,7 @@ func stop_ablation() -> void:
 	_puzzle_mode_enabled = false
 	_mini_ablation_active = false
 	_ablation_api_error_count = 0
+	_ablation_retry_pending = false
 	if _ablation_runner != null:
 		_ablation_runner.stop()
 	if _puzzle_runner != null:
@@ -577,6 +588,7 @@ func _on_ablation_completed(results: Dictionary) -> void:
 	_puzzle_mode_enabled = false
 	_mini_ablation_active = false
 	_ablation_api_error_count = 0
+	_ablation_retry_pending = false
 	if _ablation_runner != null:
 		_ablation_runner.stop()
 	if _puzzle_runner != null:
@@ -743,7 +755,36 @@ func _is_ablation_running() -> bool:
 
 
 func _terminate_ablation_due_to_api_failure(reason: String) -> void:
+	_ablation_retry_pending = false
 	if _puzzle_runner != null:
 		_puzzle_runner.stop()
 	if _ablation_runner != null and _ablation_runner.is_running():
 		_ablation_runner.terminate_with_failure(reason)
+
+
+func _compute_ablation_retry_delay_seconds(error_meta: Dictionary) -> float:
+	var retry_after: float = maxf(0.0, float(error_meta.get("retry_after_seconds", 0.0)))
+	var exponential: float = ABLATION_RETRY_BASE_DELAY_SECONDS * pow(2.0, float(_ablation_api_error_count - 1))
+	var jitter: float = _ablation_retry_rng.randf_range(0.0, ABLATION_RETRY_JITTER_SECONDS)
+	var delay_seconds: float = maxf(retry_after, exponential + jitter)
+	return minf(ABLATION_RETRY_MAX_DELAY_SECONDS, delay_seconds)
+
+
+func _schedule_ablation_retry(delay_seconds: float) -> void:
+	if _ablation_retry_pending:
+		return
+	_ablation_retry_pending = true
+	var wait_seconds: float = maxf(0.0, delay_seconds)
+	var timer: SceneTreeTimer = get_tree().create_timer(wait_seconds)
+	timer.timeout.connect(_on_ablation_retry_timeout)
+
+
+func _on_ablation_retry_timeout() -> void:
+	_ablation_retry_pending = false
+	if not _is_ablation_running():
+		return
+	if turn_manager.phase != TurnManager.GamePhase.PREP:
+		return
+	if turn_manager.prep_turn != TurnManager.PrepTurn.LLM:
+		return
+	_trigger_llm_turn()

@@ -3,7 +3,7 @@ extends LlmHttpBase
 ## Extends LlmHttpBase for shared HTTP infrastructure.
 
 signal llm_prep_response_received(unit_type: UnitData.UnitType, grid_pos: Vector2i)
-signal llm_request_failed(error_message: String, is_api_error: bool)
+signal llm_request_failed(error_message: String, is_api_error: bool, error_meta: Dictionary)
 signal llm_reasoning_captured(reasoning_text: String)
 
 var _prompt_builder: LlmPromptBuilder
@@ -74,8 +74,9 @@ func _on_api_response_parsed(response_text: String) -> void:
 	llm_prep_response_received.emit(parse_result["unit_type"], parse_result["position"])
 
 
-func _on_request_error(error_message: String) -> void:
-	llm_request_failed.emit(error_message, true)
+func _on_request_error(error_message: String, error_meta: Dictionary = {}) -> void:
+	var is_api_error: bool = bool(error_meta.get("is_api_error", true))
+	llm_request_failed.emit(error_message, is_api_error, error_meta)
 
 
 func _get_client_name() -> String:

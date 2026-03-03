@@ -106,7 +106,7 @@ func _on_api_response_parsed(response_text: String) -> void:
 	reflection_response_received.emit(feedback)
 
 
-func _on_request_error(error_message: String) -> void:
+func _on_request_error(error_message: String, _error_meta: Dictionary = {}) -> void:
 	reflection_request_failed.emit(error_message)
 
 
