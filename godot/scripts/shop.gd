@@ -31,6 +31,13 @@ static func create_randomized() -> Shop:
 	return shop
 
 
+static func create_fixed(types: Array[UnitData.UnitType], starting_gold: int = STARTING_GOLD) -> Shop:
+	var shop := Shop.new()
+	shop.available_types.assign(types)
+	shop.gold = maxi(0, starting_gold)
+	return shop
+
+
 func can_afford(type: UnitData.UnitType) -> bool:
 	if type not in available_types:
 		return false

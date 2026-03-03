@@ -26,6 +26,7 @@ func build_system_prompt(config: LlmModeConfig, reflection_feedback: String = ""
 func build_user_message(
 	board: GameBoard,
 	llm_shop: Shop,
+	enemy_shop: Shop,
 	turn_number: int,
 	game_history: Array[Dictionary],
 	_config: LlmModeConfig
@@ -42,6 +43,7 @@ func build_user_message(
 	parts.append(BoardSerializer.serialize(board))
 	parts.append("")
 	parts.append("Your shop: %s" % llm_shop.get_purchase_summary())
+	parts.append("Opponent's shop: %s" % enemy_shop.get_purchase_summary())
 	parts.append("")
 
 	for i in range(game_history.size()):

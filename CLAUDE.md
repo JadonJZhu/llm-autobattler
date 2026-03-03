@@ -4,6 +4,8 @@
 
 A 4x3 autochess game built in Godot where an LLM (Claude Opus 4.6) competes against a human player. Both players spend gold to buy and place units during a **Prep phase**, then watch units fight automatically in a **Battle phase**. The LLM receives a full game replay of the previous match to inform its next prep decisions.
 
+The project also supports a **Puzzle-Based Ablation Mode**: the opponent follows a scripted sequence of placements, and the LLM is evaluated across all prompt configurations (`instructions`, `examples`, `reflection`) by how many attempts it needs to solve each puzzle.
+
 - **Grid**: 4 rows × 3 columns. LLM occupies rows 0–1 (top); Human occupies rows 2–3 (bottom).
 - **Prep**: Players alternate placing units from a randomized shop (3 gold to start). LLM always goes first.
 - **Battle**: Deterministic. Units activate by priority (A > B > C > D, then placement order). Units advance toward the opponent's edge and escape for 1 point each.
@@ -50,18 +52,21 @@ godot/
     board_serializer.gd    — Board state → ASCII text grid for LLM prompt and logging
     llm_http_base.gd       — Shared HTTP base class for Claude API communication
     llm_client.gd          — Autoload singleton (extends LlmHttpBase). LLM player API requests
-    llm_player_adapter.gd  — Human-side LLM adapter (extends LlmHttpBase) for experiments
     llm_prompt_builder.gd  — Builds system prompt and user message for LLM prep turn
     llm_response_parser.gd — Parses "PLACE: <type> (row, col)" from LLM response text
     llm_fallback.gd        — Random valid placement when LLM fails or API key is absent
     llm_mode_config.gd     — Pure data class for LLM mode toggles (instructions, examples, reflection)
     reflection_client.gd   — Requests strategic reflection feedback from Claude API
     game_logger.gd         — Autoload singleton. JSON logging to user://game_logs/; replay data
-    experiment_coordinator.gd — Manages LLM-vs-LLM experiment lifecycle and human-side LLM
-    experiment_runner.gd   — Tracks experiment trial state (game count, win/loss tallies)
-    experiment_logger.gd   — Persists per-experiment game results to JSON
+    puzzle_scenario.gd     — Data model for a scripted puzzle definition
+    puzzle_loader.gd       — Loads puzzle scenarios from JSON
+    puzzle_runner.gd       — Runs one puzzle across multiple attempts for a mode config
+    ablation_runner.gd     — Iterates all 8 mode configs across puzzle scenarios
+    puzzle_logger.gd       — Persists puzzle ablation outputs to JSON
     grid_constants.gd      — ROWS=4, COLS=3, LLM_ROWS=[0,1], HUMAN_ROWS=[2,3]
     style_utils.gd         — StyleBoxFlat factory helper (bg, border, corner radius)
+  puzzles/
+    puzzle_suite.json      — Scripted puzzle set for ablation experiments
 ```
 
 ### Autoloads
@@ -104,6 +109,15 @@ godot/
 - Response format expected: `PLACE: <type> (row, col)` as the last non-empty line
 - Parsed by `LlmResponseParser`; on failure, `LlmFallback` picks a random valid placement
 - No extended thinking / chain-of-thought extraction currently implemented
+
+## Puzzle Ablation Notes
+
+- `GameController.start_ablation(max_attempts_per_puzzle, puzzle_path)` starts an end-to-end run.
+- Puzzles are loaded from `res://puzzles/puzzle_suite.json` by `PuzzleLoader`.
+- Each puzzle defines fixed LLM shop, fixed opponent shop, and a turn-by-turn scripted opponent placement sequence.
+- During puzzle mode, the opponent turn is not human input or a second LLM; it is consumed from the scripted queue.
+- `AblationRunner` evaluates all 8 `LlmModeConfig` combinations (`I{0,1}_E{0,1}_R{0,1}`) across all puzzles.
+- Results are written by `PuzzleLogger` to `user://game_logs/ablation_<timestamp>.json`.
 
 ## Conventions
 

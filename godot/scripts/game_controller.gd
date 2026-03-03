@@ -1,7 +1,7 @@
 extends Node2D
 ## Root controller for the autochess game scene.
 ## Wires together GameBoard, BoardUI, TurnManager, LlmClient, and ShopUI.
-## Experiment logic is delegated to ExperimentCoordinator.
+## Experiment logic is handled by puzzle runners.
 
 # --- Scene references ---
 
@@ -15,6 +15,11 @@ extends Node2D
 
 const REFLECTION_GAME_INTERVAL: int = 5
 const REASONING_SUMMARY_MAX_CHARS: int = 275
+const DEFAULT_PUZZLE_PATH: String = "res://puzzles/puzzle_suite.json"
+const PUZZLE_LOADER_SCRIPT = preload("res://scripts/puzzle_loader.gd")
+const PUZZLE_RUNNER_SCRIPT = preload("res://scripts/puzzle_runner.gd")
+const ABLATION_RUNNER_SCRIPT = preload("res://scripts/ablation_runner.gd")
+const PUZZLE_LOGGER_SCRIPT = preload("res://scripts/puzzle_logger.gd")
 
 var _llm_shop: Shop
 var _human_shop: Shop
@@ -25,12 +30,18 @@ var _mode_config: LlmModeConfig = LlmModeConfig.new()
 var _reflection_client: ReflectionClient
 var _games_since_reflection: int = 0
 var _awaiting_reflection: bool = false
-var _experiment_coordinator: ExperimentCoordinator
+var _puzzle_loader = PUZZLE_LOADER_SCRIPT.new()
+var _puzzle_runner: Node
+var _ablation_runner: Node
+var _puzzle_logger = PUZZLE_LOGGER_SCRIPT.new()
+var _puzzle_mode_enabled: bool = false
+var _active_puzzle_scenario = null
+var _opponent_placements_queue: Array[Dictionary] = []
 
 
 func _ready() -> void:
 	_setup_reflection_client()
-	_setup_experiment_coordinator()
+	_setup_puzzle_system()
 	_connect_signals()
 	_setup_instructions_menu()
 	LlmClient.set_mode_config(_mode_config)
@@ -58,8 +69,20 @@ func _connect_signals() -> void:
 
 func _start_game() -> void:
 	_game_is_over = false
-	_llm_shop = Shop.create_randomized()
-	_human_shop = Shop.create_randomized()
+	if _puzzle_mode_enabled and _puzzle_runner != null and _puzzle_runner.is_running():
+		_llm_shop = _build_fixed_shop(
+			_active_puzzle_scenario.llm_shop_types,
+			_active_puzzle_scenario.llm_gold
+		)
+		_human_shop = _build_fixed_shop(
+			_active_puzzle_scenario.opponent_shop_types,
+			_active_puzzle_scenario.opponent_gold
+		)
+		_opponent_placements_queue = _puzzle_runner.get_opponent_queue_snapshot()
+	else:
+		_llm_shop = Shop.create_randomized()
+		_human_shop = Shop.create_randomized()
+		_opponent_placements_queue.clear()
 
 	game_board.initialize()
 	board_ui.clear()
@@ -76,7 +99,16 @@ func _start_game() -> void:
 		turn_manager.phase == TurnManager.GamePhase.PREP
 		and turn_manager.prep_turn == TurnManager.PrepTurn.LLM
 	):
-		shop_ui.update_status("Game started! LLM places first. LLM is thinking...")
+		if _puzzle_mode_enabled and _puzzle_runner != null and _puzzle_runner.is_running():
+			shop_ui.update_status(
+				"Puzzle %s (attempt %d/%d) started. LLM is thinking..." % [
+					_active_puzzle_scenario.id,
+					_puzzle_runner.current_attempt,
+					_puzzle_runner.max_attempts,
+				]
+			)
+		else:
+			shop_ui.update_status("Game started! LLM places first. LLM is thinking...")
 
 
 func _on_shop_button_pressed(type: UnitData.UnitType) -> void:
@@ -98,10 +130,9 @@ func _on_prep_turn_changed(turn: TurnManager.PrepTurn) -> void:
 
 	if turn == TurnManager.PrepTurn.LLM:
 		_trigger_llm_turn()
-	elif turn == TurnManager.PrepTurn.HUMAN and _experiment_coordinator.experiment_mode:
-		_experiment_coordinator.trigger_human_llm_turn(
-			game_board, _human_shop, turn_manager.turn_number
-		)
+	elif turn == TurnManager.PrepTurn.HUMAN:
+		if _puzzle_mode_enabled and _puzzle_runner != null and _puzzle_runner.is_running():
+			_apply_scripted_opponent_turn()
 
 
 func _trigger_llm_turn() -> void:
@@ -109,7 +140,7 @@ func _trigger_llm_turn() -> void:
 		shop_ui.clear_reasoning_summary()
 		shop_ui.update_status("LLM is thinking...")
 		LlmClient.request_llm_prep(
-			game_board, _llm_shop,
+			game_board, _llm_shop, _human_shop,
 			turn_manager.turn_number, GameLogger.get_game_history()
 		)
 	else:
@@ -222,11 +253,13 @@ func _on_game_over(winner, score_data: Dictionary) -> void:
 	else:
 		winner_text = "Human wins!"
 
-	if _experiment_coordinator.is_experiment_running():
-		var still_running: bool = _experiment_coordinator.record_game_result(
-			winner_text, score_data, turn_manager.battle_step_number
+	if _puzzle_mode_enabled and _puzzle_runner != null and _puzzle_runner.is_running():
+		var should_continue: bool = _puzzle_runner.record_attempt_result(
+			winner,
+			score_data,
+			turn_manager.battle_step_number
 		)
-		if still_running:
+		if should_continue:
 			_restart_game()
 		return
 
@@ -333,57 +366,136 @@ func _on_mode_config_changed(config: LlmModeConfig) -> void:
 	LlmClient.set_mode_config(config)
 
 
-# --- Experiment Mode ---
+func _apply_scripted_opponent_turn() -> void:
+	if _puzzle_runner == null:
+		return
 
+	var placement: Dictionary = _puzzle_runner.consume_next_opponent_placement()
+	_opponent_placements_queue = _puzzle_runner.get_opponent_queue_snapshot()
+	if placement.is_empty():
+		shop_ui.update_status("Scripted opponent has no remaining placements. Skipping turn.")
+		turn_manager.skip_prep_turn()
+		_refresh_shop_ui()
+		return
 
-func _setup_experiment_coordinator() -> void:
-	_experiment_coordinator = ExperimentCoordinator.new()
-	_experiment_coordinator.experiment_status_updated.connect(_on_experiment_status)
-	_experiment_coordinator.experiment_ended.connect(_on_experiment_ended)
-	_experiment_coordinator.human_llm_placement_ready.connect(_on_human_llm_placement_ready)
-	_experiment_coordinator.human_llm_placement_failed.connect(_on_human_llm_placement_failed)
-	add_child(_experiment_coordinator)
-
-
-func start_experiment(llm_cfg: LlmModeConfig, human_cfg: LlmModeConfig,
-		num_games: int = 30) -> void:
-	_mode_config = llm_cfg
-	LlmClient.set_mode_config(llm_cfg)
-	_experiment_coordinator.start_experiment(llm_cfg, human_cfg, num_games)
-	turn_manager.set_autoplay(true)
-	shop_ui.disable_all_shop_buttons()
-	_start_game()
-
-
-func stop_experiment() -> void:
-	_experiment_coordinator.stop_experiment()
-
-
-func _on_experiment_status(message: String) -> void:
-	shop_ui.update_status(message)
-
-
-func _on_experiment_ended(results: Dictionary) -> void:
-	shop_ui.update_status(
-		"Experiment complete! LLM wins: %d | Human wins: %d | Ties: %d" % [
-			results.get("llm_wins", 0),
-			results.get("human_wins", 0),
-			results.get("ties", 0),
-		]
+	var success: bool = turn_manager.apply_human_prep_placement(
+		placement["unit_type"],
+		placement["position"]
 	)
-	print("Experiment results: ", results)
-
-
-func _on_human_llm_placement_ready(unit_type: UnitData.UnitType, grid_pos: Vector2i) -> void:
-	var success: bool = turn_manager.apply_human_prep_placement(unit_type, grid_pos)
 	if not success:
-		push_warning("Human LLM placement failed for %s at %s. Falling back." % [
-			UnitData.TYPE_LABELS[unit_type], str(grid_pos)
-		])
+		push_warning("Scripted opponent placement failed at %s. Skipping." % str(placement["position"]))
 		turn_manager.skip_prep_turn()
 	_refresh_shop_ui()
 
 
-func _on_human_llm_placement_failed() -> void:
-	turn_manager.skip_prep_turn()
-	_refresh_shop_ui()
+func _build_fixed_shop(types: Array[UnitData.UnitType], starting_gold: int) -> Shop:
+	var shop := Shop.new()
+	shop.available_types.assign(types)
+	shop.gold = maxi(0, starting_gold)
+	return shop
+
+
+# --- Puzzle Ablation Mode ---
+
+
+func _setup_puzzle_system() -> void:
+	_puzzle_runner = PUZZLE_RUNNER_SCRIPT.new()
+	_puzzle_runner.attempt_started.connect(_on_puzzle_attempt_started)
+	_puzzle_runner.attempt_completed.connect(_on_puzzle_attempt_completed)
+	_puzzle_runner.puzzle_completed.connect(_on_puzzle_completed)
+	add_child(_puzzle_runner)
+
+	_ablation_runner = ABLATION_RUNNER_SCRIPT.new()
+	_ablation_runner.puzzle_requested.connect(_on_ablation_puzzle_requested)
+	_ablation_runner.ablation_progress.connect(_on_ablation_progress)
+	_ablation_runner.ablation_completed.connect(_on_ablation_completed)
+	add_child(_ablation_runner)
+
+
+func start_ablation(max_attempts_per_puzzle: int = 10,
+		puzzle_path: String = DEFAULT_PUZZLE_PATH) -> void:
+	var puzzles: Array = _puzzle_loader.load_puzzles(puzzle_path)
+	if puzzles.is_empty():
+		shop_ui.update_status("No puzzles loaded. Check puzzle_suite.json.")
+		return
+
+	_puzzle_mode_enabled = true
+	turn_manager.set_autoplay(true)
+	shop_ui.disable_all_shop_buttons()
+	var started: bool = _ablation_runner.start(puzzles, max_attempts_per_puzzle)
+	if not started:
+		_puzzle_mode_enabled = false
+
+
+func stop_ablation() -> void:
+	_puzzle_mode_enabled = false
+	if _ablation_runner != null:
+		_ablation_runner.stop()
+	if _puzzle_runner != null:
+		_puzzle_runner.stop()
+	_active_puzzle_scenario = null
+	_opponent_placements_queue.clear()
+
+
+func _on_ablation_puzzle_requested(config: LlmModeConfig, scenario,
+		max_attempts: int) -> void:
+	_mode_config = config
+	LlmClient.set_mode_config(config)
+	LlmClient.set_reflection_feedback("")
+	_games_since_reflection = 0
+	_active_puzzle_scenario = scenario
+	_puzzle_runner.start_puzzle(scenario, config, max_attempts)
+
+
+func _on_puzzle_attempt_started(scenario_id: String, attempt_number: int, max_attempts: int) -> void:
+	shop_ui.update_status(
+		"Puzzle %s attempt %d/%d (%s)" % [
+			scenario_id,
+			attempt_number,
+			max_attempts,
+			_mode_config.get_label(),
+		]
+	)
+	_start_game()
+
+
+func _on_puzzle_attempt_completed(result: Dictionary) -> void:
+	shop_ui.update_status(
+		"Puzzle %s attempt %d complete: %s | score %d-%d" % [
+			str(result.get("scenario_id", "")),
+			int(result.get("attempt", 0)),
+			str(result.get("winner", "")),
+			int(result.get("llm_score", 0)),
+			int(result.get("opponent_score", 0)),
+		]
+	)
+
+
+func _on_puzzle_completed(summary: Dictionary) -> void:
+	if _ablation_runner != null and _ablation_runner.is_running():
+		_ablation_runner.record_puzzle_summary(summary)
+		return
+
+	shop_ui.update_status(
+		"Puzzle complete (%s): solved=%s attempts=%d/%d" % [
+			str(summary.get("puzzle_id", "")),
+			str(summary.get("solved", false)),
+			int(summary.get("attempts_needed", 0)),
+			int(summary.get("max_attempts", 0)),
+		]
+	)
+
+
+func _on_ablation_progress(config_label: String, puzzle_id: String,
+		completed: int, total: int) -> void:
+	shop_ui.update_status(
+		"Ablation progress %d/%d | %s | %s" % [completed, total, config_label, puzzle_id]
+	)
+
+
+func _on_ablation_completed(results: Dictionary) -> void:
+	_puzzle_mode_enabled = false
+	var log_path: String = _puzzle_logger.save_ablation_results(results)
+	shop_ui.update_status(
+		"Ablation complete. Results saved to %s" % log_path
+	)

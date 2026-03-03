@@ -1,0 +1,5 @@
+I originally was going to make the ablation study LLM vs. LLM. But realized
+- structural directionality might bias LLMs
+- turn order requires significantly more trials 
+- code complexity is higher 
+- temperature introduces more noise

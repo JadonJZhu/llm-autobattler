@@ -36,8 +36,8 @@ func set_reflection_feedback(feedback: String) -> void:
 	_reflection_feedback = feedback
 
 
-func request_llm_prep(board: GameBoard, llm_shop: Shop, turn_number: int,
-		game_history: Array[Dictionary]) -> void:
+func request_llm_prep(board: GameBoard, llm_shop: Shop, human_shop: Shop,
+		turn_number: int, game_history: Array[Dictionary]) -> void:
 	if _is_requesting:
 		push_warning("LlmClient: Request already in progress.")
 		return
@@ -50,7 +50,7 @@ func request_llm_prep(board: GameBoard, llm_shop: Shop, turn_number: int,
 		_mode_config, _reflection_feedback
 	)
 	var user_message: String = _prompt_builder.build_user_message(
-		board, llm_shop, turn_number, game_history, _mode_config
+		board, llm_shop, human_shop, turn_number, game_history, _mode_config
 	)
 	_send_request(system_prompt, user_message)
 

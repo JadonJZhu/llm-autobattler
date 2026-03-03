@@ -1,0 +1,123 @@
+{
+  "puzzles": [
+    {
+      "id": "easy_open_lane",
+      "description": "Opponent opens with a single center blocker.",
+      "difficulty": 1,
+      "llm_shop": ["A", "B", "C"],
+      "llm_gold": 3,
+      "opponent_shop": ["A"],
+      "opponent_gold": 1,
+      "opponent_placements": [
+        { "type": "A", "row": 2, "col": 1 }
+      ]
+    },
+    {
+      "id": "easy_split_pressure",
+      "description": "Opponent places two A units on opposite lanes.",
+      "difficulty": 1,
+      "llm_shop": ["A", "B", "D"],
+      "llm_gold": 3,
+      "opponent_shop": ["A"],
+      "opponent_gold": 2,
+      "opponent_placements": [
+        { "type": "A", "row": 2, "col": 0 },
+        { "type": "A", "row": 2, "col": 2 }
+      ]
+    },
+    {
+      "id": "easy_diagonal_probe",
+      "description": "Opponent alternates diagonal units to test local responses.",
+      "difficulty": 1,
+      "llm_shop": ["A", "B", "C"],
+      "llm_gold": 3,
+      "opponent_shop": ["B", "C"],
+      "opponent_gold": 2,
+      "opponent_placements": [
+        { "type": "B", "row": 2, "col": 1 },
+        { "type": "C", "row": 3, "col": 0 }
+      ]
+    },
+    {
+      "id": "medium_center_sniper",
+      "description": "Opponent anchors center with D then applies side pressure.",
+      "difficulty": 2,
+      "llm_shop": ["A", "C", "D"],
+      "llm_gold": 3,
+      "opponent_shop": ["D", "A"],
+      "opponent_gold": 3,
+      "opponent_placements": [
+        { "type": "D", "row": 2, "col": 1 },
+        { "type": "A", "row": 3, "col": 0 }
+      ]
+    },
+    {
+      "id": "medium_crossfire",
+      "description": "Opponent forms cross-lane diagonal threats over three turns.",
+      "difficulty": 2,
+      "llm_shop": ["A", "B", "D"],
+      "llm_gold": 3,
+      "opponent_shop": ["A", "B", "C"],
+      "opponent_gold": 3,
+      "opponent_placements": [
+        { "type": "B", "row": 2, "col": 2 },
+        { "type": "C", "row": 2, "col": 0 },
+        { "type": "A", "row": 3, "col": 1 }
+      ]
+    },
+    {
+      "id": "medium_staggered_screen",
+      "description": "Opponent creates a front screen before adding a D finisher.",
+      "difficulty": 2,
+      "llm_shop": ["A", "C", "D"],
+      "llm_gold": 3,
+      "opponent_shop": ["A", "D"],
+      "opponent_gold": 3,
+      "opponent_placements": [
+        { "type": "A", "row": 2, "col": 1 },
+        { "type": "D", "row": 3, "col": 1 }
+      ]
+    },
+    {
+      "id": "hard_triple_lane_lock",
+      "description": "Opponent fills the full front row with A units.",
+      "difficulty": 3,
+      "llm_shop": ["A", "B", "D"],
+      "llm_gold": 3,
+      "opponent_shop": ["A"],
+      "opponent_gold": 3,
+      "opponent_placements": [
+        { "type": "A", "row": 2, "col": 0 },
+        { "type": "A", "row": 2, "col": 1 },
+        { "type": "A", "row": 2, "col": 2 }
+      ]
+    },
+    {
+      "id": "hard_sniper_plus_diagonal",
+      "description": "Opponent opens with D and follows with diagonal harassment.",
+      "difficulty": 3,
+      "llm_shop": ["A", "C", "D"],
+      "llm_gold": 3,
+      "opponent_shop": ["D", "B"],
+      "opponent_gold": 3,
+      "opponent_placements": [
+        { "type": "D", "row": 2, "col": 1 },
+        { "type": "B", "row": 3, "col": 2 }
+      ]
+    },
+    {
+      "id": "hard_full_pressure",
+      "description": "Opponent executes a four-gold scripted sequence with mixed threats.",
+      "difficulty": 3,
+      "llm_shop": ["A", "B", "D"],
+      "llm_gold": 3,
+      "opponent_shop": ["D", "A", "C"],
+      "opponent_gold": 4,
+      "opponent_placements": [
+        { "type": "D", "row": 2, "col": 1 },
+        { "type": "A", "row": 2, "col": 0 },
+        { "type": "C", "row": 3, "col": 2 }
+      ]
+    }
+  ]
+}

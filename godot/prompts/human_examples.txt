@@ -1,2 +1,0 @@
-EXAMPLES:
-(Example battle traces will be provided here in future updates.)
