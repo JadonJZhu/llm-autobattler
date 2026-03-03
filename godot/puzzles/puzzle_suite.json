@@ -34,13 +34,13 @@
       "id": "hard_sniper_plus_diagonal",
       "description": "Opponent opens with D, then chains diagonals and lane pressure into a dense killbox.",
       "llm_shop": ["A", "C", "D"],
-      "llm_gold": 3,
+      "llm_gold": 4,
       "opponent_shop": ["D", "A", "B", "C"],
-      "opponent_gold": 6,
+      "opponent_gold": 5,
       "opponent_placements": [
-        { "type": "D", "row": 3, "col": 1 },
         { "type": "D", "row": 3, "col": 2 },
         { "type": "B", "row": 2, "col": 2 },
+        { "type": "B", "row": 2, "col": 1 },
         { "type": "C", "row": 2, "col": 0 }
       ]
     }

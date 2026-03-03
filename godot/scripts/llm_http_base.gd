@@ -56,6 +56,7 @@ func _build_request_body(system_prompt: String, user_message: String) -> Diction
 	return {
 		"model": _get_api_model(),
 		"max_tokens": MAX_TOKENS,
+		"temperature": 0,
 		"system": system_prompt,
 		"messages": [
 			{

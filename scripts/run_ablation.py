@@ -132,8 +132,6 @@ def _run_single_worker(
         "config": spec.config_label,
         "command": command,
         "returncode": completed.returncode,
-        "stdout": completed.stdout or "",
-        "stderr": completed.stderr or "",
         "output_path": output_path,
     }
 
