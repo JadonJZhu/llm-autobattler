@@ -20,8 +20,8 @@ const UNIT_COSTS: Dictionary = {
 }
 
 const OWNER_COLORS: Dictionary = {
-	Owner.LLM: Color(0.3, 0.5, 0.9),
-	Owner.HUMAN: Color(0.9, 0.4, 0.3),
+	Owner.LLM: Color(0.9, 0.4, 0.3),
+	Owner.HUMAN: Color(0.3, 0.5, 0.9),
 }
 
 const TYPE_COLORS: Dictionary = {

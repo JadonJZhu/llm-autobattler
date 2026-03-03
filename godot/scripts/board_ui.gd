@@ -5,12 +5,12 @@ extends Node2D
 
 const CELL_BORDER_WIDTH: int = 2
 
-const LLM_CELL_BG: Color = Color(0.197, 0.0, 0.729, 0.85)
-const LLM_CELL_BORDER: Color = Color(0.3, 0.4, 0.7)
-const LLM_CELL_HOVER_BG: Color = Color(0.25, 0.3, 0.5, 0.9)
-const HUMAN_CELL_BG: Color = Color(0.4, 0.2, 0.2, 0.85)
-const HUMAN_CELL_BORDER: Color = Color(0.7, 0.35, 0.3)
-const HUMAN_CELL_HOVER_BG: Color = Color(0.5, 0.25, 0.25, 0.9)
+const LLM_CELL_BG: Color = Color(0.4, 0.2, 0.2, 0.85)
+const LLM_CELL_BORDER: Color = Color(0.7, 0.35, 0.3)
+const LLM_CELL_HOVER_BG: Color = Color(0.5, 0.25, 0.25, 0.9)
+const HUMAN_CELL_BG: Color = Color(0.197, 0.0, 0.729, 0.85)
+const HUMAN_CELL_BORDER: Color = Color(0.3, 0.4, 0.7)
+const HUMAN_CELL_HOVER_BG: Color = Color(0.25, 0.3, 0.5, 0.9)
 
 @export var game_board: GameBoard
 
