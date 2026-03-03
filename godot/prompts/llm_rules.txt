@@ -11,7 +11,3 @@ BATTLE MECHANICS:
 - Units that advance past the opponent's edge ESCAPE and earn 1 point.
 - Battle alternates: you go first, then opponent, repeat until neither side can take any action.
 - Score is: units still on board + escaped units. Higher score wins. Equal scores are a tie.
-
-STRATEGY TIPS:
-- Consider what the opponent might place and position your units to counter.
-- Use the opponent's visible shop options and gold count to anticipate likely purchases and counter-placements.

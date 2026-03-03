@@ -44,7 +44,7 @@ func log_prep_placement(turn_number: int, unit_owner: String, unit_type: String,
 
 
 func log_battle_step(step_number: int, active_owner: String, events: String) -> void:
-	var has_escape: bool = events.find("escaped off the board") != -1
+	var has_escape: bool = events.find("escape") != -1
 	log_turn(step_number, {
 		"phase": "battle",
 		"active_owner": active_owner,

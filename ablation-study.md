@@ -398,6 +398,10 @@ For current suite (`P=9`) and default `A=10`:
    - Ablation summary is compact and analysis-friendly.
    - Detailed step traces live in `game_<session>.json`.
 
+5. **History trace leakage control**
+   - `battle_steps` in replay history are serialized as compact state transitions (`x`, `->`, `no_action`, `escape`, `END`) instead of explanatory natural-language mechanics.
+   - This reduces instructional leakage into `I0` ("no instructions") mode while preserving observability of state changes.
+
 ---
 
 ## 13) Minimal “how to run” and where to look

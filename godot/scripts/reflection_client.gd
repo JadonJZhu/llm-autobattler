@@ -92,7 +92,7 @@ func _append_game_details(parts: PackedStringArray, game: Dictionary) -> void:
 	var llm_score: int = int(game.get("llm_score", -1))
 	var human_score: int = int(game.get("human_score", -1))
 	if llm_score >= 0 and human_score >= 0:
-		parts.append("Score: LLM %d vs Human %d" % [llm_score, human_score])
+		parts.append("Score: LLM %d vs Opponent %d" % [llm_score, human_score])
 
 
 func _on_api_response_parsed(response_text: String) -> void:

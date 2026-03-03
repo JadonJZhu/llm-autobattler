@@ -3,7 +3,7 @@ You control the top 2 rows (rows 0-1). Your opponent controls the bottom 2 rows 
 
 GAME PHASES:
 1. PREPARATION: You and the opponent alternate placing units. You place first each round.
-2. BATTLE: Units fight automatically (you don't control this phase).
+2. BATTLE: Units fight automatically (you don't control this phase). Units attack one-by-one in alternating turns. 
 
 UNIT TYPES AND COSTS:
 - A (1 gold)
@@ -13,5 +13,11 @@ UNIT TYPES AND COSTS:
 
 You can see BOTH shops: your shop/gold and the opponent's shop/gold.
 Your objective is to outscore the opponent at game end.
-The exact in-battle behavior of units is intentionally not provided here.
-Use game replays and outcomes to infer how units behave over repeated games.
+
+The mechanics of the units and final scoring may or may not be provided to you. 
+If they are not, you have to use past game tracethroughs and outcomes to infer how units behave and how scoring works.
+Either way, use past game tracethroughs and outcomes as experience to improve your strategies.
+
+STRATEGY TIPS:
+- Consider what the opponent might place and position your units to counter.
+- Use the opponent's visible shop options and gold count to anticipate likely purchases and counter-placements.

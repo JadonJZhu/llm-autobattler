@@ -34,7 +34,7 @@ func execute_step(snapshot: BattleSnapshot, active_owner: UnitData.Owner) -> Dic
 	var acting_unit := _pick_acting_unit(units, active_owner)
 	if acting_unit == NO_UNIT:
 		# No units can act — check terminal
-		result["event"] = "No units can act for %s (turn skipped)" % _owner_label(active_owner)
+		result["event"] = "PASS"
 		result["event_type"] = "pass"
 		_check_terminal(snapshot, units, result)
 		return result
@@ -82,7 +82,7 @@ func _act_a(
 	if _has_enemy_at(units, ahead, unit_owner):
 		units.erase(ahead)
 		result["removal"] = ahead
-		result["event"] = "A at %s removes enemy at %s" % [pos, ahead]
+		result["event"] = "A %s x %s" % [_fmt_pos(pos), _fmt_pos(ahead)]
 		result["event_type"] = "attack"
 	else:
 		_try_advance(units, snapshot, pos, unit_owner, result)
@@ -107,7 +107,7 @@ func _act_b(
 	if _has_enemy_at(units, diag_left, unit_owner):
 		units.erase(diag_left)
 		result["removal"] = diag_left
-		result["event"] = "B at %s removes enemy at %s" % [pos, diag_left]
+		result["event"] = "B %s x %s" % [_fmt_pos(pos), _fmt_pos(diag_left)]
 		result["event_type"] = "attack"
 	else:
 		_try_advance(units, snapshot, pos, unit_owner, result)
@@ -132,7 +132,7 @@ func _act_c(
 	if _has_enemy_at(units, diag_right, unit_owner):
 		units.erase(diag_right)
 		result["removal"] = diag_right
-		result["event"] = "C at %s removes enemy at %s" % [pos, diag_right]
+		result["event"] = "C %s x %s" % [_fmt_pos(pos), _fmt_pos(diag_right)]
 		result["event_type"] = "attack"
 	else:
 		_try_advance(units, snapshot, pos, unit_owner, result)
@@ -143,10 +143,10 @@ func _act_d(_snapshot: BattleSnapshot, units: Dictionary, pos: Vector2i, unit_ow
 	if closest != NO_UNIT:
 		units.erase(closest)
 		result["removal"] = closest
-		result["event"] = "D at %s removes enemy at %s" % [pos, closest]
+		result["event"] = "D %s x %s" % [_fmt_pos(pos), _fmt_pos(closest)]
 		result["event_type"] = "attack"
 	else:
-		result["event"] = "D at %s has no enemies to target" % [pos]
+		result["event"] = "D %s no_action" % [_fmt_pos(pos)]
 		result["event_type"] = "pass"
 
 
@@ -181,13 +181,13 @@ func _try_advance(
 			_increment_escaped(snapshot, unit_owner)
 		units.erase(pos)
 		result["self_removal"] = pos
-		result["event"] = "%s at %s escaped off the board" % [type_label, pos]
+		result["event"] = "%s %s escape" % [type_label, _fmt_pos(pos)]
 		result["event_type"] = "escaped"
 		return
 
 	# Check if the cell ahead is occupied (friendly or enemy — can't move into occupied)
 	if units.has(ahead):
-		result["event"] = "%s at %s cannot advance (cell %s occupied)" % [type_label, pos, ahead]
+		result["event"] = "%s %s no_action" % [type_label, _fmt_pos(pos)]
 		result["event_type"] = "blocked"
 		return
 
@@ -197,7 +197,7 @@ func _try_advance(
 	units[ahead] = unit_data
 	result["move"] = { "from": pos, "to": ahead }
 	type_label = UnitData.TYPE_LABELS[unit_data["unit_type"]]
-	result["event"] = "%s advances from %s to %s" % [type_label, pos, ahead]
+	result["event"] = "%s %s -> %s" % [type_label, _fmt_pos(pos), _fmt_pos(ahead)]
 	result["event_type"] = "advance"
 
 
@@ -329,13 +329,14 @@ func _check_terminal(snapshot: BattleSnapshot, units: Dictionary, result: Dictio
 		result["is_finished"] = true
 		if llm_score > human_score:
 			result["winner"] = UnitData.Owner.LLM
-			result["event"] += " | Game over by stalemate. LLM wins on score %d-%d." % [llm_score, human_score]
 		elif human_score > llm_score:
 			result["winner"] = UnitData.Owner.HUMAN
-			result["event"] += " | Game over by stalemate. Opponent wins on score %d-%d." % [human_score, llm_score]
 		else:
 			result["winner"] = null
-			result["event"] += " | Game over by stalemate. Tie on score %d-%d." % [llm_score, human_score]
+		if result["event"].is_empty():
+			result["event"] = "END"
+		else:
+			result["event"] += " | END"
 
 
 func _increment_escaped(snapshot: BattleSnapshot, unit_owner: UnitData.Owner) -> void:
@@ -345,5 +346,5 @@ func _increment_escaped(snapshot: BattleSnapshot, unit_owner: UnitData.Owner) ->
 		snapshot.human_escaped += 1
 
 
-func _owner_label(owner: UnitData.Owner) -> String:
-	return "LLM" if owner == UnitData.Owner.LLM else "Human"
+func _fmt_pos(pos: Vector2i) -> String:
+	return "(%d,%d)" % [pos.x, pos.y]
