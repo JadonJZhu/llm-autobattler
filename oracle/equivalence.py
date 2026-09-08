@@ -8,6 +8,13 @@ and through ``godot/tools/battle_trace.gd``, which drives the shipped
 ``BattleEngine``, and requires them to agree on the winner, on every score
 field, and on every per-step event.
 
+Every case is then resolved a third time, untraced. ``analysis.py`` resolves
+boards with the default ``trace=False``, so that is the path the study's
+difficulty and regret figures come from, and requiring it to reach the same
+final record as the traced path puts it inside this sweep rather than leaving
+it covered by the argument that the two paths share their rule logic. Only the
+final record is compared there, because an untraced battle keeps no steps.
+
 Run it:
 
     python3 oracle/equivalence.py            # 17,190 cases, about 10 seconds
@@ -26,8 +33,11 @@ copy and it must fail. The chosen module is installed as ``engine`` before
 copy the battles are resolved with, and that is exactly why a broken constant
 needs a check of its own. A wrong unit cost or a wrong home row only changes
 which boards prep builds; the same board then goes to both sides, they agree,
-and the sweep silently gets smaller. So before any sweep runs, the engine's
-constants are checked against the GDScript the shipped game loads them from.
+and the sweep silently gets smaller. So before any sweep runs, the constants
+that decide which boards get built are checked against the GDScript the shipped
+game loads them from. That covers the engine's own, and the two the preparation
+phase holds outside the engine module for the same reason: ``prep``'s default
+starting gold and the agent shop size ``generate`` deals.
 
 What that leaves untested is prep's own logic. Turn order, the affordability
 rule and the enumeration of plays have no Godot counterpart on this path, so a
@@ -52,10 +62,12 @@ DEFAULT_ENGINE = REPO_ROOT / "oracle" / "engine.py"
 GODOT_PROJECT = REPO_ROOT / "godot"
 TRACE_SCRIPT = "tools/battle_trace.gd"
 
-# The shipped game's own declarations of the board shape and the unit table,
-# read as text because the constants check has to see them without Godot.
+# The shipped game's own declarations of the board shape, the unit table and
+# the shop, read as text because the constants check has to see them without
+# Godot.
 GRID_CONSTANTS_GD = GODOT_PROJECT / "scripts" / "grid_constants.gd"
 UNIT_DATA_GD = GODOT_PROJECT / "scripts" / "unit_data.gd"
+SHOP_GD = GODOT_PROJECT / "scripts" / "shop.gd"
 
 # Godot costs about a quarter second to start and about 0.21ms per case
 # (measured 2026-09-07: 2,000 cases in 0.66s, 100,000 in 21.0s). At 25,000 cases
@@ -73,17 +85,20 @@ OWNER_FROM_LABEL = {label: owner for owner, label in OWNER_LABELS.items()}
 
 engine = None
 prep = None
+generate = None
 engine_path = None
 
 
 def load_modules(path):
-    """Import the engine under test, then prep on top of it.
+    """Import the engine under test, then prep and generate on top of it.
 
     ``prep`` does ``import engine``, so installing the chosen module under that
     name first is what makes ``--engine`` cover board construction as well as
-    battle resolution.
+    battle resolution. ``generate`` imports both and must come after them for
+    the same reason: imported first, it would cache a ``prep`` built on the
+    default engine and ``--engine`` would quietly stop covering anything.
     """
-    global engine, prep, engine_path
+    global engine, prep, generate, engine_path
     engine_path = path
     spec = importlib.util.spec_from_file_location("engine", path)
     module = importlib.util.module_from_spec(spec)
@@ -91,6 +106,7 @@ def load_modules(path):
     spec.loader.exec_module(module)
     engine = module
     prep = importlib.import_module("prep")
+    generate = importlib.import_module("generate")
 
 
 # --- The constants the shipped game declares ---
@@ -145,42 +161,51 @@ def gd_unit_dict(source, path, name, unit_types):
 
 
 def check_constants():
-    """Require the engine under test to hold the shipped game's constants.
+    """Require the oracle to hold the shipped game's constants.
 
     Battle resolution is compared case by case, but the board a case starts
-    from is built by prep and handed to both sides, so a constant only prep
-    reads (the unit costs, the home rows) cannot disagree with anything. The
-    GDScript is the ground truth the port was written from, so the comparison
-    is against the game's own declarations rather than against a second copy of
-    the numbers kept here.
+    from is built by prep and handed to both sides, so a constant only the
+    preparation phase reads (the unit costs, the home rows) cannot disagree
+    with anything: it changes which boards get swept, silently. That is what
+    this check is for, and it applies past the engine module to the two such
+    constants prep and generate hold themselves, so those are checked here
+    beside the engine's. The GDScript is the ground truth the port was written
+    from, so the comparison is against the game's own declarations rather than
+    against a second copy of the numbers kept here.
     """
     grid = GRID_CONSTANTS_GD.read_text()
     units = UNIT_DATA_GD.read_text()
+    shop = SHOP_GD.read_text()
     unit_types = gd_enum(units, UNIT_DATA_GD, "UnitType")
     owners = gd_enum(units, UNIT_DATA_GD, "Owner")
     expected = {
-        "ROWS": gd_int(grid, GRID_CONSTANTS_GD, "ROWS"),
-        "COLS": gd_int(grid, GRID_CONSTANTS_GD, "COLS"),
-        "LLM_ROWS": gd_int_array(grid, GRID_CONSTANTS_GD, "LLM_ROWS"),
-        "OPPONENT_ROWS": gd_int_array(grid, GRID_CONSTANTS_GD, "HUMAN_ROWS"),
-        "A": unit_types["A"],
-        "B": unit_types["B"],
-        "C": unit_types["C"],
-        "D": unit_types["D"],
-        "LLM": owners["LLM"],
-        "OPPONENT": owners["HUMAN"],
-        "TYPE_LABELS": gd_unit_dict(units, UNIT_DATA_GD, "TYPE_LABELS", unit_types),
-        "UNIT_COSTS": gd_unit_dict(units, UNIT_DATA_GD, "UNIT_COSTS", unit_types),
+        (engine, "ROWS"): gd_int(grid, GRID_CONSTANTS_GD, "ROWS"),
+        (engine, "COLS"): gd_int(grid, GRID_CONSTANTS_GD, "COLS"),
+        (engine, "LLM_ROWS"): gd_int_array(grid, GRID_CONSTANTS_GD, "LLM_ROWS"),
+        (engine, "OPPONENT_ROWS"): gd_int_array(grid, GRID_CONSTANTS_GD, "HUMAN_ROWS"),
+        (engine, "A"): unit_types["A"],
+        (engine, "B"): unit_types["B"],
+        (engine, "C"): unit_types["C"],
+        (engine, "D"): unit_types["D"],
+        (engine, "LLM"): owners["LLM"],
+        (engine, "OPPONENT"): owners["HUMAN"],
+        (engine, "TYPE_LABELS"): gd_unit_dict(units, UNIT_DATA_GD, "TYPE_LABELS", unit_types),
+        (engine, "UNIT_COSTS"): gd_unit_dict(units, UNIT_DATA_GD, "UNIT_COSTS", unit_types),
+        # The gold puzzle_loader.gd defaults a missing gold field to, and the
+        # shop size Shop.create_randomized deals, which is the size generate
+        # gives the agent.
+        (prep, "STARTING_GOLD"): gd_int(shop, SHOP_GD, "STARTING_GOLD"),
+        (generate, "AGENT_SHOP_SIZE"): gd_int(shop, SHOP_GD, "SHOP_SIZE"),
     }
     mismatches = [
-        "  %s: engine %r, shipped %r" % (name, getattr(engine, name), value)
-        for name, value in expected.items()
-        if getattr(engine, name) != value
+        "  %s.%s: holds %r, shipped %r" % (module.__name__, name, getattr(module, name), value)
+        for (module, name), value in expected.items()
+        if getattr(module, name) != value
     ]
     if mismatches:
         raise RuntimeError(
-            "%s does not hold the constants the shipped game declares:\n%s"
-            % (engine_path, "\n".join(mismatches))
+            "the oracle (engine %s) does not hold the constants the shipped "
+            "game declares:\n%s" % (engine_path, "\n".join(mismatches))
         )
     return len(expected)
 
@@ -285,13 +310,18 @@ SHOP_SUBSETS = [
     for labels in itertools.combinations("ABCD", size)
 ]
 
-GOLD_BAND = (3, 4, 5, 6)
-
-
 def synthetic_suite():
-    """Puzzle suite JSON spanning the gold band and every shop composition."""
+    """Puzzle suite JSON spanning the gold band and every shop composition.
+
+    The band is generate's, not a copy of it: generate decides what gold the
+    generated puzzles actually hold, and this sweep exists to cover that space,
+    so a band that widened there has to widen here or the cover goes stale
+    without saying so.
+    """
     puzzles = []
-    for index, (gold, shop) in enumerate(itertools.product(GOLD_BAND, SHOP_SUBSETS)):
+    for index, (gold, shop) in enumerate(
+        itertools.product(generate.GOLD_BAND, SHOP_SUBSETS)
+    ):
         script = OPPONENT_SCRIPTS[index % len(OPPONENT_SCRIPTS)]
         puzzles.append(
             {
@@ -541,46 +571,63 @@ def sweep_crowded(rng, count):
 # --- Comparing the two sides ---
 
 
+GODOT_LABELS = ("oracle", "godot")
+UNTRACED_LABELS = ("untraced", "traced")
+
+
 def rendered(value, key):
     return json.dumps(value[key]) if key in value else "<missing>"
 
 
-def first_difference(path, oracle, godot):
-    """The first place two parsed traces disagree, as a readable line, or None.
+def first_difference(path, left, right, labels):
+    """The first place two parsed records disagree, as a readable line, or None.
 
-    Structural on purpose: Godot's JSON.stringify sorts keys and Python's does
-    not, so comparing the text would report a difference on every case.
+    ``labels`` names the two sides in the message. Structural on purpose:
+    Godot's JSON.stringify sorts keys and Python's does not, so comparing the
+    text would report a difference on every case.
     """
-    if isinstance(oracle, dict) and isinstance(godot, dict):
-        for key in sorted(set(oracle) | set(godot)):
-            if key not in oracle or key not in godot:
-                return "%s.%s: oracle %s, godot %s" % (
+    if isinstance(left, dict) and isinstance(right, dict):
+        for key in sorted(set(left) | set(right)):
+            if key not in left or key not in right:
+                return "%s.%s: %s %s, %s %s" % (
                     path,
                     key,
-                    rendered(oracle, key),
-                    rendered(godot, key),
+                    labels[0],
+                    rendered(left, key),
+                    labels[1],
+                    rendered(right, key),
                 )
-            difference = first_difference("%s.%s" % (path, key), oracle[key], godot[key])
+            difference = first_difference(
+                "%s.%s" % (path, key), left[key], right[key], labels
+            )
             if difference:
                 return difference
         return None
-    if isinstance(oracle, list) and isinstance(godot, list):
+    if isinstance(left, list) and isinstance(right, list):
         # The shared prefix is checked before the lengths, so a battle that ran
         # longer on one side is reported at the step where it went wrong rather
         # than as a step count.
-        for index, (mine, theirs) in enumerate(zip(oracle, godot)):
-            difference = first_difference("%s[%d]" % (path, index), mine, theirs)
+        for index, (mine, theirs) in enumerate(zip(left, right)):
+            difference = first_difference("%s[%d]" % (path, index), mine, theirs, labels)
             if difference:
                 return difference
-        if len(oracle) != len(godot):
-            return "%s: oracle has %d entries, godot has %d" % (
+        if len(left) != len(right):
+            return "%s: %s has %d entries, %s has %d" % (
                 path,
-                len(oracle),
-                len(godot),
+                labels[0],
+                len(left),
+                labels[1],
+                len(right),
             )
         return None
-    if oracle != godot:
-        return "%s: oracle %s, godot %s" % (path, json.dumps(oracle), json.dumps(godot))
+    if left != right:
+        return "%s: %s %s, %s %s" % (
+            path,
+            labels[0],
+            json.dumps(left),
+            labels[1],
+            json.dumps(right),
+        )
     return None
 
 
@@ -659,6 +706,7 @@ def compare_batch(cases, godot_binary, work_dir):
             for unit in case["units"]
         }
         oracle = engine.run_battle(board, trace=True)
+        untraced = engine.run_battle(board)
         godot = by_id[case["id"]]
 
         if oracle["aborted"] or godot["aborted"]:
@@ -669,9 +717,22 @@ def compare_batch(cases, godot_binary, work_dir):
             )
         # Steps first: the earliest step they disagree on names the rule that
         # broke, where the final score only says that something did.
-        difference = first_difference("steps", oracle["steps"], godot["steps"])
+        difference = first_difference(
+            "steps", oracle["steps"], godot["steps"], GODOT_LABELS
+        )
         if difference is None:
-            difference = first_difference("final", oracle["final"], godot["final"])
+            difference = first_difference(
+                "final", oracle["final"], godot["final"], GODOT_LABELS
+            )
+        if difference is None:
+            # The path analysis.py takes. It keeps no steps, so the final record
+            # and the abort flag are the whole of what it produces.
+            difference = first_difference(
+                "untraced",
+                {"final": untraced["final"], "aborted": untraced["aborted"]},
+                {"final": oracle["final"], "aborted": oracle["aborted"]},
+                UNTRACED_LABELS,
+            )
         if difference is not None:
             raise Divergence(case, difference)
 
@@ -747,7 +808,7 @@ def report_divergence(divergence):
     print("  %s" % divergence.reason)
     print("  units: %s" % json.dumps(divergence.case["units"]))
     print("  the case on its own: %s" % case_path)
-    print("  replay it:")
+    print("  replay the traced comparison:")
     print(
         "    python3 %s --cases %s --out /tmp/oracle-trace.json"
         % (engine_path, case_path)
@@ -871,7 +932,11 @@ def main():
         shutil.rmtree(work_dir, ignore_errors=True)
 
     print_summary(results, args.seed, time.perf_counter() - started)
-    print("PASSED: the oracle and the Godot engine agreed on every case.")
+    print(
+        "PASSED: the oracle and the Godot engine agreed on every step of every "
+        "case, and the untraced path analysis.py uses reached the same final "
+        "record on all of them."
+    )
     return 0
 
 

@@ -38,12 +38,15 @@ from typing import NamedTuple
 import engine
 import prep
 
-# The action space of each shipped puzzle, confirmed three ways in prep.py. A
-# mismatch means the puzzle file or the prep port changed under the study, which
-# invalidates every landscape built before the change, so the CLI writes nothing
-# at all rather than artifacts that silently describe a different game. A puzzle
-# named here and absent from the suite is the same failure wearing a rename: the
-# check would otherwise just disappear.
+# The action space of each puzzle in the game's own suite. The three counts were
+# agreed on by a hand derivation, by this enumeration, and by driving all 11,550
+# plays through the real headless TurnManager, Shop and GameBoard, so they record
+# what the shipped suite measured. They detect change rather than establish
+# correctness: a mismatch means the puzzle file or the prep port moved under the
+# study, which invalidates every landscape built before the move, so the CLI
+# writes nothing at all rather than artifacts that silently describe a different
+# game. An id named here and missing from the shipped suite is the same failure
+# wearing a rename, so it is fatal too.
 EXPECTED_PLAY_COUNTS = {"1": 3240, "2": 1080, "3": 7230}
 
 DEFAULT_OUT_DIR = Path(__file__).resolve().parent / "artifacts"
@@ -57,6 +60,42 @@ _TIMING_METHOD = (
     "pre-built boards from an evenly spaced sample of the puzzle's plays, "
     "divided by the sample size, best of several passes."
 )
+
+
+def is_shipped_suite(path):
+    """Whether ``path`` is the game's own suite, the one the counts describe.
+
+    EXPECTED_PLAY_COUNTS holds the action space of the shipped puzzles and of no
+    others, so the shipped file is exactly where every id in it must be present
+    and match. A suite from anywhere else has no expected counts; a generated one
+    is instead checked against the counts it records for itself, which is what
+    ``recorded_counts`` reads.
+    """
+    return Path(path).resolve() == Path(prep.DEFAULT_PUZZLE_PATH).resolve()
+
+
+def recorded_counts(path):
+    """The play and win counts a suite file records for its own puzzles, by id.
+
+    ``generate.py`` writes ``play_count`` and ``win_count`` beside every puzzle
+    it accepts, from its own enumeration of that puzzle. Checking them against
+    this module's enumeration is two independent counts of one action space, so a
+    disagreement means one of the two enumerations is wrong. A file that records
+    neither, the shipped suite among them, yields nothing here and is checked
+    against EXPECTED_PLAY_COUNTS alone.
+    """
+    with open(path) as handle:
+        root = json.load(handle)
+    raw_puzzles = root.get("puzzles", []) if isinstance(root, dict) else []
+
+    counts = {}
+    for raw in raw_puzzles:
+        if isinstance(raw, dict) and "play_count" in raw and "win_count" in raw:
+            counts[str(raw.get("id", "")).strip()] = (
+                raw["play_count"],
+                raw["win_count"],
+            )
+    return counts
 
 
 def encode_placement(placement):
@@ -80,10 +119,21 @@ def puzzle_fingerprint(puzzle):
     landscape can be matched against the suite it claims to describe instead of
     being taken on trust. It does not fingerprint the prep port or the engine;
     the play-count check is what catches those changing.
+
+    ``loader_difficulty`` is the integer ``difficulty`` field as
+    ``prep.load_puzzles`` produced it, which is the only difficulty either loader
+    reads. It is not the win fraction the artifact reports as ``difficulty``, and
+    carries a different name so the two cannot be confused for each other. What
+    it counts depends on the suite: the shipped puzzles carry no ``difficulty``
+    field at all, so the loader's default makes it 1 for every one of them, while
+    a suite from ``generate.py`` puts the puzzle's rank across the file there, 1
+    for the easiest to N for the hardest, and keeps its acceptance bin in a
+    separate ``tier`` field neither loader reads. So it identifies a puzzle
+    within its own file and means nothing across files.
     """
     return {
         "id": puzzle.id,
-        "difficulty": puzzle.difficulty,
+        "loader_difficulty": puzzle.difficulty,
         "llm_shop": [engine.TYPE_LABELS[unit_type] for unit_type in puzzle.llm_shop],
         "llm_gold": puzzle.llm_gold,
         "opponent_shop": [
@@ -378,20 +428,31 @@ def main():
     )
     args = parser.parse_args()
 
+    shipped = is_shipped_suite(args.puzzles)
+    recorded = recorded_counts(args.puzzles)
+
     analyses = []
     miscounted = []
+    disagreed = []
     for puzzle in prep.load_puzzles(args.puzzles):
         analysis = analyze_puzzle(puzzle)
         analyses.append(analysis)
 
-        expected = EXPECTED_PLAY_COUNTS.get(puzzle.id)
+        expected = EXPECTED_PLAY_COUNTS.get(puzzle.id) if shipped else None
         if expected is not None and analysis.play_count != expected:
             miscounted.append((puzzle.id, analysis.play_count, expected))
 
+        own = recorded.get(puzzle.id)
+        counted = (analysis.play_count, analysis.win_count)
+        if own is not None and own != counted:
+            disagreed.append((puzzle.id, counted, own))
+
         print("puzzle %s" % analysis.puzzle_id)
         print("  %d complete legal plays" % analysis.play_count)
-        if expected is None:
-            print("  play count unchecked: no expected count for this puzzle id")
+        if shipped and expected is None:
+            print("  play count unchecked: this id is new to the shipped suite")
+        if own == counted:
+            print("  play and win counts agree with the suite file's own record")
         print(
             "  difficulty %.4f (%d of %d plays win)"
             % (analysis.difficulty, analysis.win_count, analysis.play_count)
@@ -413,9 +474,22 @@ def main():
         )
 
     analysed_ids = {analysis.puzzle_id for analysis in analyses}
-    absent = sorted(set(EXPECTED_PLAY_COUNTS) - analysed_ids)
+    absent = sorted(set(EXPECTED_PLAY_COUNTS) - analysed_ids) if shipped else []
+    if not shipped:
+        checked = sum(1 for analysis in analyses if analysis.puzzle_id in recorded)
+        if checked:
+            print(
+                "%s is not the shipped suite, so the expected counts do not apply; "
+                "%d of %d puzzles were checked against the counts the file records "
+                "for itself" % (args.puzzles, checked, len(analyses))
+            )
+        else:
+            print(
+                "play counts unchecked: %s is not the shipped suite and records no "
+                "counts of its own" % args.puzzles
+            )
 
-    if miscounted or absent:
+    if miscounted or absent or disagreed:
         for puzzle_id, actual, expected in miscounted:
             print(
                 "puzzle %s enumerated %d plays, expected %d: the puzzle file or the "
@@ -427,6 +501,14 @@ def main():
             print(
                 "puzzle %s has an expected play count but is not in the suite, so "
                 "its action space went unchecked" % puzzle_id,
+                file=sys.stderr,
+            )
+        for puzzle_id, counted, own in disagreed:
+            print(
+                "puzzle %s enumerated %d plays of which %d win, but the suite file "
+                "records %d and %d: this enumeration and the one that generated the "
+                "file disagree about the same puzzle"
+                % (puzzle_id, counted[0], counted[1], own[0], own[1]),
                 file=sys.stderr,
             )
         print("no artifacts written", file=sys.stderr)
