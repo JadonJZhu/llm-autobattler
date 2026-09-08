@@ -21,6 +21,9 @@ __pycache__/
 
 ablation_results
 
+# Oracle analysis output (generated)
+oracle/artifacts/
+
 # LaTeX build artifacts
 *.aux
 *.fdb_latexmk
