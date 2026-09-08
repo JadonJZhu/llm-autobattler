@@ -2,6 +2,7 @@
   "puzzles": [
     {
       "id": "1",
+      "difficulty": 2,
       "llm_shop": ["A", "C", "B"],
       "llm_gold": 3,
       "opponent_shop": ["A", "B", "D"],
@@ -16,10 +17,11 @@
     },
     {
       "id": "2",
+      "difficulty": 3,
       "llm_shop": ["A", "B", "D"],
       "llm_gold": 3,
       "opponent_shop": ["A", "C", "D"],
-      "opponent_gold": 6,
+      "opponent_gold": 7,
       "opponent_placements": [
         { "type": "C", "row": 2, "col": 0 },
         { "type": "A", "row": 2, "col": 1 },
@@ -30,6 +32,7 @@
     },
     {
       "id": "3",
+      "difficulty": 1,
       "llm_shop": ["A", "C", "D"],
       "llm_gold": 4,
       "opponent_shop": ["D", "A", "B", "C"],

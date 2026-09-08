@@ -105,9 +105,10 @@ def _random_queue(rng, shop, gold):
 
     Squares are distinct and on the opponent's own rows, every type is in its
     shop, and the running total never exceeds its gold, so no placement is
-    refused and none is left unconsumed. Puzzle 2 of the shipped suite queues 7
-    gold of units against a budget of 6 and silently fields four instead of
-    five; ``check_queue_lands`` is what stops this from emitting that.
+    refused and none is left unconsumed. A queue that costs more than its gold
+    is placed up to the budget and the rest is silently dropped, which is a
+    puzzle harder than it reads as; ``check_queue_lands`` is what stops this
+    from emitting one.
     """
     squares = list(OPPONENT_SQUARES)
     rng.shuffle(squares)
@@ -198,9 +199,10 @@ def evaluate(puzzle):
     ``self-check`` is what holds the two to the same answer.
 
     This measures whatever puzzle it is handed, including one whose queue does
-    not land: the shipped suite contains such a puzzle and its difficulty is
-    still a fact about it. ``draw`` is where generated puzzles are held to the
-    stronger property.
+    not land: the win fraction is a fact about the units a puzzle actually
+    fields, not about the ones it lists. ``draw`` is where generated puzzles are
+    held to the stronger property, and ``self-check`` reports it for the shipped
+    ones.
     """
     play_count = 0
     win_count = 0
@@ -945,10 +947,10 @@ def _study(args):
 def _self_check(args):
     """Hold ``evaluate`` to ``analysis.analyze_puzzle`` on the shipped suite.
 
-    Also reports what each shipped queue actually fields. Puzzle 2 queues 7 gold
-    against a budget of 6, so it fields four units rather than the five it reads
-    as; that is the case ``check_queue_lands`` exists to keep out of generated
-    puzzles, and seeing the check fire on it here is what says the check works.
+    Also reports what each shipped queue actually fields, which is the property
+    ``check_queue_lands`` exists to hold generated puzzles to. All three shipped
+    queues land, so this is a fixture that means what it reads as; a line here
+    saying otherwise means the suite has drifted.
     """
     failed = False
     for puzzle in prep.load_puzzles(args.puzzles):

@@ -124,12 +124,13 @@ def puzzle_fingerprint(puzzle):
     ``prep.load_puzzles`` produced it, which is the only difficulty either loader
     reads. It is not the win fraction the artifact reports as ``difficulty``, and
     carries a different name so the two cannot be confused for each other. What
-    it counts depends on the suite: the shipped puzzles carry no ``difficulty``
-    field at all, so the loader's default makes it 1 for every one of them, while
-    a suite from ``generate.py`` puts the puzzle's rank across the file there, 1
-    for the easiest to N for the hardest, and keeps its acceptance bin in a
-    separate ``tier`` field neither loader reads. So it identifies a puzzle
-    within its own file and means nothing across files.
+    it counts is a rank within one file, 1 for the easiest by win fraction to N
+    for the hardest. The shipped puzzles each carry the field and are ranked that
+    way across the three of them; a suite from ``generate.py`` ranks its accepted
+    puzzles the same way and keeps its acceptance bin in a separate ``tier``
+    field neither loader reads, which the shipped suite has no counterpart for. A
+    file that omits the field falls to the loader's default of 1 throughout. So
+    it identifies a puzzle within its own file and means nothing across files.
     """
     return {
         "id": puzzle.id,
