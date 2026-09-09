@@ -69,10 +69,13 @@ GRID_CONSTANTS_GD = GODOT_PROJECT / "scripts" / "grid_constants.gd"
 UNIT_DATA_GD = GODOT_PROJECT / "scripts" / "unit_data.gd"
 SHOP_GD = GODOT_PROJECT / "scripts" / "shop.gd"
 
-# Godot costs about a quarter second to start and about 0.21ms per case
-# (measured 2026-09-07: 2,000 cases in 0.66s, 100,000 in 21.0s). At 25,000 cases
-# a batch, startup is under 5% of the run and one batch holds roughly 7MB of
-# input and 23MB of trace, which is small enough to parse whole.
+# Godot costs about 0.29s to start and about 0.75ms per case (measured
+# 2026-09-09 by driving battle_trace.gd over the shipped prep boards, cycled to
+# fill the batch, best of three: 1 case in 0.28s, 2,000 in 1.78s, 10,000 in
+# 9.50s, 25,000 in 20.12s, 100,000 in 74.89s). The machine is shared and under
+# load, so read these as good to roughly 1.23x and no better. At 25,000 cases a
+# batch, startup is about 1.5% of the run and one batch of prep boards holds
+# roughly 15MB of input and 72MB of trace, which is small enough to parse whole.
 DEFAULT_BATCH = 25000
 
 DEFAULT_SEED = 20260907
