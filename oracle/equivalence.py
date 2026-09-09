@@ -342,20 +342,20 @@ def synthetic_suite():
 def load_synthetic_puzzles(work_dir):
     """Write the synthetic suite out and read it back through prep's own loader.
 
-    Going through load_puzzles rather than building Puzzle objects directly
-    means these are puzzles the shipped loader accepts, and the count check
-    catches a generated puzzle the loader would silently drop.
+    Going through the loader rather than building Puzzle objects directly means
+    these are puzzles the shipped loader accepts, and ``Suite.puzzles`` is what
+    the sweep needs from it rather than ``prep.check_queue_lands``: the scripts
+    deliberately queue placements prep refuses at run time, an unaffordable one
+    and one onto a taken square, so the property here is that every placement
+    the file lists reached prep, not that every one reached the board. That is
+    exactly what ``Suite.puzzles`` holds, at every level the loader can discard
+    at. Without it a mistyped square or shop label would shrink the boards swept
+    and the sweep would still report a clean run over fewer of them.
     """
     suite = synthetic_suite()
     path = work_dir / "synthetic_puzzles.json"
     path.write_text(json.dumps(suite, indent=2))
-    puzzles = prep.load_puzzles(path)
-    if len(puzzles) != len(suite["puzzles"]):
-        raise RuntimeError(
-            "prep.load_puzzles kept %d of %d synthetic puzzles"
-            % (len(puzzles), len(suite["puzzles"]))
-        )
-    return puzzles
+    return prep.load_suite(path).puzzles()
 
 
 def random_play(puzzle, rng):
@@ -394,7 +394,7 @@ def plays_for(puzzle, limit, rng):
 
 def sweep_prep(rng, real_limit, synthetic_limit, work_dir):
     """Starting boards from the preparation phase, real puzzles and synthetic."""
-    for puzzle in prep.load_puzzles():
+    for puzzle in prep.load_suite().puzzles():
         for play in plays_for(puzzle, real_limit, rng):
             yield prep.build_board(puzzle, play)
     for puzzle in load_synthetic_puzzles(work_dir):

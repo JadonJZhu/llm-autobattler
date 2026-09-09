@@ -38,7 +38,12 @@ This module measures that. In order:
 DIFFICULTY here is ``analysis``'s: the fraction of complete legal plays that
 win, a win being ``llm_score > human_score``. ``self-check`` runs this module's
 counter and ``analysis.analyze_puzzle`` over the shipped suite and requires them
-to agree, which is what says the two are the same measurement.
+to agree, which is what says the two are the same measurement. It also requires
+every shipped puzzle to field the placements its file lists, and fires both
+guards against a puzzle being measured as something its file does not describe
+on fixtures of its own: three for a listed placement that never reaches the
+board, one per way it can go missing, and three for a whole puzzle that never
+reaches a measurement.
 
 EVERY SECONDS FIGURE IS WALL CLOCK on whatever machine and load the run met.
 ``study`` re-enumerates one puzzle several times and prints how far apart those
@@ -62,7 +67,9 @@ import math
 import random
 import statistics
 import sys
+import tempfile
 from dataclasses import dataclass, replace
+from pathlib import Path
 from time import perf_counter
 
 import analysis
@@ -103,12 +110,14 @@ TIMING_REPEATS = 3
 def _random_queue(rng, shop, gold):
     """A placement queue the scripted opponent can afford and fully place.
 
-    Squares are distinct and on the opponent's own rows, every type is in its
-    shop, and the running total never exceeds its gold, so no placement is
-    refused and none is left unconsumed. A queue that costs more than its gold
-    is placed up to the budget and the rest is silently dropped, which is a
-    puzzle harder than it reads as; ``check_queue_lands`` is what stops this
-    from emitting one.
+    Every placement lands by construction: squares are distinct and on the
+    opponent's own rows, every type is in its shop, and a type is queued only
+    while the running total still leaves it affordable, so none is refused and
+    the opponent is never marked done with entries left. This matters because
+    the game consumes a queued placement before testing whether it can be made,
+    so an over-budget queue silently loses units and yields a puzzle harder than
+    it reads as. ``draw`` asserts the property rather than trusting this
+    paragraph.
     """
     squares = list(OPPONENT_SQUARES)
     rng.shuffle(squares)
@@ -147,32 +156,6 @@ def random_puzzle(rng, puzzle_id):
     )
 
 
-def check_queue_lands(puzzle):
-    """Raise unless every queued opponent placement reaches the board.
-
-    A queue entry can be consumed and refused (unaffordable, off-shop, or onto
-    a taken square) or never consumed at all (the opponent is marked done once
-    it can afford nothing), and either way the puzzle fields fewer units than it
-    reads as. Counting what landed catches both.
-
-    One play is enough: the opponent's gold, queue and occupancy never touch
-    agent state, and the two sides place on disjoint rows, so what it fields is
-    the same under every play. Only the placement orders differ.
-    """
-    result = prep.simulate_prep(puzzle, next(prep.enumerate_plays(puzzle)))
-    if len(result.opponent_units) != len(puzzle.opponent_placements):
-        raise ValueError(
-            "puzzle %s queues %d opponent placements but fields %d (%d refused): %s"
-            % (
-                puzzle.id,
-                len(puzzle.opponent_placements),
-                len(result.opponent_units),
-                len(result.refused),
-                puzzle.opponent_placements,
-            )
-        )
-
-
 # --- Evaluating one candidate ---
 
 
@@ -200,9 +183,9 @@ def evaluate(puzzle):
 
     This measures whatever puzzle it is handed, including one whose queue does
     not land: the win fraction is a fact about the units a puzzle actually
-    fields, not about the ones it lists. ``draw`` is where generated puzzles are
-    held to the stronger property, and ``self-check`` reports it for the shipped
-    ones.
+    fields, not about the ones it lists. ``draw`` asserts the stronger property
+    for generated puzzles, and ``analysis.analyze_puzzle`` holds every puzzle it
+    builds a landscape for.
     """
     play_count = 0
     win_count = 0
@@ -222,9 +205,17 @@ def evaluate(puzzle):
 
 
 def draw(rng, puzzle_id):
-    """A random puzzle whose opponent queue lands, measured."""
+    """A random puzzle, measured, with its queue held to landing in full.
+
+    The check is a postcondition on the generator and not a rejection rule:
+    ``_random_queue`` cannot build a queue that fails it, so nothing here
+    resamples and a failure aborts generation. That is the intended behaviour.
+    A generator that had started emitting puzzles harder than they read as would
+    otherwise write them into a suite, and every difficulty measured from that
+    suite would describe boards other than the ones its file states.
+    """
     puzzle = random_puzzle(rng, puzzle_id)
-    check_queue_lands(puzzle)
+    prep.check_queue_lands(puzzle)
     return evaluate(puzzle)
 
 
@@ -382,7 +373,7 @@ def puzzle_json(candidate, rank, tier):
 
     The bin is in ``tier`` and the win fraction in ``measured_difficulty``.
     Both are ignored by ``PuzzleLoader._parse_scenario`` and by
-    ``prep.load_puzzles``, and grouping on ``tier`` recovers the bins the
+    ``prep.load_suite``, and grouping on ``tier`` recovers the bins the
     acceptance measurement used.
     """
     puzzle = candidate.puzzle
@@ -446,20 +437,22 @@ def suite_json(run):
 def write_suite(run, path):
     """Write the suite and read it back through the loader the game uses.
 
-    ``prep.load_puzzles`` is the port of ``puzzle_loader.gd``, so a file it
-    reads back as the puzzles it was written from is a file the game's loader
-    accepts. Writing a suite the study cannot load is the failure this catches,
-    and one comparison against the candidates in memory is cheap enough to
-    always run.
+    ``prep.load_suite`` is the port of ``puzzle_loader.gd``, so a file it reads
+    back as the puzzles it was written from is a file the game's loader accepts.
+    Writing a suite the study cannot load is the failure this catches, and one
+    comparison against the candidates in memory is cheap enough to always run.
+    Going through ``puzzles`` rather than the kept list also holds the written
+    file to being measurable: a puzzle it dropped, or an id it wrote twice,
+    refuses here rather than in whatever stage reads the file next.
     """
     with open(path, "w") as handle:
         json.dump(suite_json(run), handle, indent=2)
 
-    expected = [
+    expected = tuple(
         replace(candidate.puzzle, difficulty=rank)
         for rank, _tier, candidate in accepted_in_order(run)
-    ]
-    if prep.load_puzzles(path) != expected:
+    )
+    if prep.load_suite(path).puzzles() != expected:
         raise ValueError(
             "%s does not read back as the puzzles it was written from" % path
         )
@@ -928,7 +921,7 @@ def _study(args):
     if args.suite_out:
         written = write_suite(run, args.suite_out)
         print(
-            "  wrote %d puzzles to %s, reloaded through prep.load_puzzles"
+            "  wrote %d puzzles to %s, reloaded through prep.load_suite"
             % (written, args.suite_out)
         )
         print(
@@ -944,16 +937,179 @@ def _study(args):
     return 1 if short else 0
 
 
-def _self_check(args):
-    """Hold ``evaluate`` to ``analysis.analyze_puzzle`` on the shipped suite.
+def _unlanded_fixtures():
+    """Puzzles that field fewer units than they list, one per way.
 
-    Also reports what each shipped queue actually fields, which is the property
-    ``check_queue_lands`` exists to hold generated puzzles to. All three shipped
-    queues land, so this is a fixture that means what it reads as; a line here
-    saying otherwise means the suite has drifted.
+    A placement the loader kept goes missing at run time two ways: the opponent
+    consumes it and refuses it, or the opponent is marked done and never
+    consumes it. ``prep.check_queue_lands`` must fire on each, and a guard that
+    has never been seen to fire is not known to work. The third way, a
+    placement the loader threw away, is a loss against the file rather than
+    against the queue, so it is one of ``_unmeasurable_fixtures`` instead.
+
+    These are fixtures rather than perturbed copies of the suite under test,
+    because whether the guard works is a fact about the guard. Starving a copy
+    of each shipped puzzle tied the check to the suite's shape and failed a
+    legal suite whose opponent queues nothing, which has nothing to starve.
+
+    Yields ``(what is lost, puzzle)``.
+    """
+    # 3 gold against a queue costing 5. The second D is popped with 1 gold left
+    # and refused, and the A behind it still lands, which is the shape shipped
+    # puzzle 2 carried until 2026-09-08.
+    yield "a queue entry consumed and refused", prep.Puzzle(
+        id="fixture-overspent",
+        difficulty=1,
+        llm_shop=(engine.A, engine.B, engine.C),
+        llm_gold=3,
+        opponent_shop=(engine.A, engine.D),
+        opponent_gold=3,
+        opponent_placements=(
+            prep.Placement(engine.D, (2, 0)),
+            prep.Placement(engine.D, (2, 1)),
+            prep.Placement(engine.A, (2, 2)),
+        ),
+    )
+
+    # One gold and a shop of nothing but A: after the first placement the
+    # opponent can afford nothing, is marked done, and never reaches the second.
+    yield "a queue entry never consumed", prep.Puzzle(
+        id="fixture-unconsumed",
+        difficulty=1,
+        llm_shop=(engine.A, engine.B, engine.C),
+        llm_gold=3,
+        opponent_shop=(engine.A,),
+        opponent_gold=1,
+        opponent_placements=(
+            prep.Placement(engine.A, (2, 0)),
+            prep.Placement(engine.A, (2, 1)),
+        ),
+    )
+
+
+def _unmeasurable_fixtures():
+    """Suite files that do not load as the suite they describe, one per way.
+
+    ``prep.Suite.puzzles`` must refuse every one of them, and a guard that has
+    never been seen to fire is not known to work. There is one case per place
+    the loader can discard something the file listed: the whole file, a whole
+    puzzle entry, a shop entry inside a kept puzzle, a placement inside a kept
+    puzzle. Both shops appear because they are read for different things, the
+    agent's to enumerate its plays and the opponent's to test affordability, and
+    a case per shop is what says the guard does not depend on which.
+
+    The last two are not discards. A file that lists no puzzles measures nothing
+    and reads as a pass, and two entries under one id have one count and one
+    artifact file between them, so the second's measurement replaces the first's.
+
+    Most are a two-puzzle file whose first puzzle is legal, which is the shape
+    that used to pass: a warning on stderr, then exit 0 with artifacts for the
+    first puzzle only. Yields ``(what is lost, path)``.
+    """
+    legal = {
+        "id": "measurable-1",
+        "llm_shop": ["A", "B", "C"],
+        "llm_gold": 3,
+        "opponent_shop": ["A"],
+        "opponent_gold": 2,
+        "opponent_placements": [
+            {"type": "A", "row": 2, "col": 0},
+            {"type": "A", "row": 2, "col": 1},
+        ],
+    }
+    second = dict(legal, id="measurable-2")
+
+    def pair(broken):
+        return {"puzzles": [legal, broken]}
+
+    cases = [
+        ("a root that is not a dictionary", [legal]),
+        ("a 'puzzles' that is not an array", {"puzzles": {"0": legal}}),
+        # generate.py --record-out nests its puzzles a level deeper, so this is
+        # the shape a reviewer reaches for by mistake.
+        ("a file that lists no puzzles", {"bin_edges": [0.0, 1.0]}),
+        ("a puzzle entry that is not a dictionary", pair("measurable-2")),
+        (
+            "a puzzle with no id",
+            pair({key: value for key, value in second.items() if key != "id"}),
+        ),
+        ("an llm_shop that is not an array", pair(dict(second, llm_shop="ABC"))),
+        ("an llm_shop with no readable type", pair(dict(second, llm_shop=["Z", "Q"]))),
+        (
+            "an opponent_shop with no readable type",
+            pair(dict(second, opponent_shop=["Z"])),
+        ),
+        (
+            "an unreadable type in an otherwise readable llm_shop",
+            pair(dict(second, llm_shop=["A", "B", "Z"])),
+        ),
+        (
+            "an unreadable type in an otherwise readable opponent_shop",
+            pair(dict(second, opponent_shop=["A", "Z"])),
+        ),
+        (
+            "opponent_placements that is not an array",
+            pair(dict(second, opponent_placements={})),
+        ),
+        (
+            "an opponent placement that is not a dictionary",
+            pair(dict(second, opponent_placements=["A at 2,0"])),
+        ),
+        (
+            "an opponent placement with an unreadable type",
+            pair(dict(second, opponent_placements=[{"type": "Z", "row": 2, "col": 0}])),
+        ),
+        (
+            # The agent's own half, so puzzle_loader.gd drops it and so does
+            # prep. It reaches no board and must still be counted.
+            "an opponent placement on a square that is not the opponent's",
+            pair(
+                dict(
+                    second,
+                    opponent_placements=[
+                        {"type": "A", "row": 2, "col": 0},
+                        {"type": "A", "row": 0, "col": 0},
+                    ],
+                )
+            ),
+        ),
+        ("two puzzles under one id", pair(dict(second, id="measurable-1"))),
+    ]
+    with tempfile.TemporaryDirectory() as directory:
+        for index, (description, root) in enumerate(cases):
+            path = Path(directory) / ("unmeasurable-%d.json" % index)
+            path.write_text(json.dumps(root))
+            yield description, path
+
+
+def _self_check(args):
+    """Hold ``evaluate`` to ``analysis.analyze_puzzle`` on the shipped suite, and
+    fire both loss guards on fixtures of this module's own.
+
+    The shipped suite is the fixture the oracle is checked against, so the two
+    things that must be true of it are that the two enumerations agree about its
+    difficulty and that every puzzle fields the placements it lists. The second
+    is the fault the suite carried on 2026-09-08: puzzle 2 gave its opponent 6
+    gold for a queue costing 7 and silently fielded four of the five units it
+    lists.
+
+    Loading the suite is itself the third check, since ``prep.Suite.puzzles``
+    refuses a file that does not load as the suite it describes.
+
+    Any suite may be passed, and a legal one passes whatever its opponents
+    queue, including nothing at all.
     """
     failed = False
-    for puzzle in prep.load_puzzles(args.puzzles):
+    for puzzle in prep.load_suite(args.puzzles).puzzles():
+        try:
+            prep.check_queue_lands(puzzle)
+        except prep.QueueDoesNotLand as error:
+            print("puzzle %s: FIELDS LESS THAN ITS FILE LISTS: %s" % (puzzle.id, error))
+            failed = True
+            continue
+        print("puzzle %s: all %d opponent placements land"
+              % (puzzle.id, len(puzzle.opponent_placements)))
+
         mine = evaluate(puzzle)
         theirs = analysis.analyze_puzzle(puzzle)
         agree = (
@@ -961,9 +1117,8 @@ def _self_check(args):
         )
         failed = failed or not agree
         print(
-            "puzzle %s: generate %d/%d = %.4f, analysis %d/%d = %.4f  %s"
+            "  generate %d/%d = %.4f, analysis %d/%d = %.4f  %s"
             % (
-                puzzle.id,
                 mine.win_count,
                 mine.play_count,
                 mine.difficulty,
@@ -973,11 +1128,24 @@ def _self_check(args):
                 "agree" if agree else "DISAGREE",
             )
         )
+
+    for description, fixture in _unlanded_fixtures():
         try:
-            check_queue_lands(puzzle)
-            print("  queue: all %d placements land" % len(puzzle.opponent_placements))
-        except ValueError as error:
-            print("  queue: %s" % error)
+            prep.check_queue_lands(fixture)
+        except prep.QueueDoesNotLand as error:
+            print("guard fires on %s: %s" % (description, error))
+        else:
+            print("GUARD DID NOT FIRE on %s, puzzle %s" % (description, fixture.id))
+            failed = True
+
+    for description, path in _unmeasurable_fixtures():
+        try:
+            prep.load_suite(path).puzzles()
+        except prep.SuiteNotMeasurable as error:
+            print("guard fires on %s: %s" % (description, error))
+        else:
+            print("GUARD DID NOT FIRE on %s, %s" % (description, path))
+            failed = True
     return 1 if failed else 0
 
 
@@ -1012,7 +1180,9 @@ def main():
     study.set_defaults(handler=_study)
 
     check = sub.add_parser(
-        "self-check", help="require this module's difficulty to match analysis's"
+        "self-check",
+        help="require this module's difficulty to match analysis's, require every "
+        "puzzle to field what its file lists, and fire the queue guard on fixtures",
     )
     check.add_argument("--puzzles", default=prep.DEFAULT_PUZZLE_PATH)
     check.set_defaults(handler=_self_check)

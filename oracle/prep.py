@@ -21,6 +21,7 @@ play and can resolve to a different battle.
 
 import json
 import sys
+from collections import Counter
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -54,9 +55,27 @@ class Placement(NamedTuple):
     pos: tuple
 
 
+def _format_placements(placements):
+    return " ".join(
+        "%s(%d,%d)" % (engine.TYPE_LABELS[unit_type], pos[0], pos[1])
+        for unit_type, pos in placements
+    )
+
+
+def _shop_label(types):
+    return "/".join(engine.TYPE_LABELS[t] for t in types)
+
+
 @dataclass(frozen=True)
 class Puzzle:
     """A scenario from puzzle_suite.json, after the loader's defaulting.
+
+    Every field is what the loader kept. ``dropped`` describes, one string each,
+    everything the file listed inside this puzzle that the loader threw away: a
+    shop entry it could not read, a placement it refused. Kept plus dropped is
+    what the file asked for, and a puzzle carrying any drop is a puzzle the file
+    does not describe; ``Suite.puzzles`` is where that becomes fatal. It is
+    empty for a puzzle built in memory rather than read from a file.
 
     Frozen and all-tuples so it can key the prep cache.
     """
@@ -68,6 +87,7 @@ class Puzzle:
     opponent_shop: tuple
     opponent_gold: int
     opponent_placements: tuple
+    dropped: tuple = ()
 
 
 class PrepResult(NamedTuple):
@@ -93,72 +113,111 @@ def _warn(message):
 
 
 def _parse_shop_types(raw_types, index, field_name):
+    """The shop types the loader keeps, and one description per entry it drops.
+
+    A label the loader cannot read leaves nothing behind in the returned tuple,
+    which is how a three-type shop became a two-type shop with no trace. The
+    descriptions are that trace.
+    """
     if not isinstance(raw_types, list):
-        _warn("puzzle index %d field '%s' must be an array" % (index, field_name))
-        return ()
+        reason = "field '%s' is not an array" % field_name
+        _warn("puzzle index %d: %s" % (index, reason))
+        return (), (reason,)
     parsed = []
+    dropped = []
     for raw_type in raw_types:
         label = str(raw_type).upper().strip()
         if label not in _VALID_TYPE_LABELS:
+            reason = "field '%s' lists the unreadable unit type '%s'" % (
+                field_name,
+                label,
+            )
             _warn(
                 "invalid unit type '%s' in field '%s' (puzzle index %d)"
                 % (label, field_name, index)
             )
+            dropped.append(reason)
             continue
         parsed.append(engine.label_to_type(label))
-    return tuple(parsed)
+    return tuple(parsed), tuple(dropped)
 
 
 def _parse_opponent_placements(raw_placements, index):
+    """The placements the loader keeps, and one description per entry it drops."""
     if not isinstance(raw_placements, list):
-        _warn("puzzle index %d field 'opponent_placements' must be an array" % index)
-        return ()
+        reason = "field 'opponent_placements' is not an array"
+        _warn("puzzle index %d: %s" % (index, reason))
+        return (), (reason,)
     placements = []
+    dropped = []
     for entry_index, item in enumerate(raw_placements):
+        reason = None
         if not isinstance(item, dict):
-            _warn(
-                "opponent placement %d for puzzle index %d is not a dictionary"
-                % (entry_index, index)
-            )
-            continue
-        label = str(item.get("type", "")).upper().strip()
-        if label not in _VALID_TYPE_LABELS:
-            _warn(
-                "invalid placement type '%s' at puzzle index %d entry %d"
-                % (label, index, entry_index)
-            )
-            continue
-        row = int(item.get("row", -1))
-        col = int(item.get("col", -1))
-        if not (0 <= row < engine.ROWS and 0 <= col < engine.COLS) or (
-            row not in engine.OPPONENT_ROWS
-        ):
-            _warn(
-                "invalid opponent placement (%d, %d) at puzzle index %d entry %d"
-                % (row, col, index, entry_index)
-            )
-            continue
-        placements.append(Placement(engine.label_to_type(label), (row, col)))
-    return tuple(placements)
+            reason = "opponent_placements entry %d is not a dictionary" % entry_index
+        else:
+            label = str(item.get("type", "")).upper().strip()
+            if label not in _VALID_TYPE_LABELS:
+                reason = (
+                    "opponent_placements entry %d has the unreadable unit type '%s'"
+                    % (entry_index, label)
+                )
+            else:
+                row = int(item.get("row", -1))
+                col = int(item.get("col", -1))
+                if not (0 <= row < engine.ROWS and 0 <= col < engine.COLS) or (
+                    row not in engine.OPPONENT_ROWS
+                ):
+                    reason = (
+                        "opponent_placements entry %d puts %s on (%d, %d), which is "
+                        "not a square of the opponent's" % (entry_index, label, row, col)
+                    )
+                else:
+                    placements.append(
+                        Placement(engine.label_to_type(label), (row, col))
+                    )
+        if reason is not None:
+            _warn("puzzle index %d: %s" % (index, reason))
+            dropped.append(reason)
+    return tuple(placements), tuple(dropped)
 
 
 def _parse_scenario(raw, index):
+    """The puzzle this entry describes, or None and why the loader dropped it.
+
+    puzzle_loader.gd drops a malformed entry and carries on, so this does too.
+    The reason travels back with the None because the drop happens before any
+    puzzle exists: that is what made a whole dropped puzzle invisible to every
+    check downstream, and ``Suite.puzzles`` is where the reason makes it fatal.
+
+    A puzzle that survives carries its own smaller losses in ``dropped``, for
+    the same reason and to the same gate. Losses inside an entry that is itself
+    dropped are not collected: the entry's own reason already says the whole
+    puzzle is missing.
+    """
     puzzle_id = str(raw.get("id", "")).strip()
     if not puzzle_id:
-        _warn("puzzle at index %d is missing 'id'" % index)
-        return None
+        reason = "puzzle at index %d is missing 'id'" % index
+        _warn(reason)
+        return None, reason
 
-    llm_shop = _parse_shop_types(raw.get("llm_shop", []), index, "llm_shop")
-    opponent_shop = _parse_shop_types(
+    llm_shop, llm_shop_dropped = _parse_shop_types(
+        raw.get("llm_shop", []), index, "llm_shop"
+    )
+    opponent_shop, opponent_shop_dropped = _parse_shop_types(
         raw.get("opponent_shop", []), index, "opponent_shop"
     )
     if not llm_shop:
-        _warn("puzzle '%s' has empty llm_shop" % puzzle_id)
-        return None
+        reason = "puzzle '%s' at index %d has empty llm_shop" % (puzzle_id, index)
+        _warn(reason)
+        return None, reason
     if not opponent_shop:
-        _warn("puzzle '%s' has empty opponent_shop" % puzzle_id)
-        return None
+        reason = "puzzle '%s' at index %d has empty opponent_shop" % (puzzle_id, index)
+        _warn(reason)
+        return None, reason
 
+    placements, placements_dropped = _parse_opponent_placements(
+        raw.get("opponent_placements", []), index
+    )
     return Puzzle(
         id=puzzle_id,
         difficulty=max(1, int(raw.get("difficulty", 1))),
@@ -166,40 +225,123 @@ def _parse_scenario(raw, index):
         llm_gold=max(0, int(raw.get("llm_gold", STARTING_GOLD))),
         opponent_shop=opponent_shop,
         opponent_gold=max(0, int(raw.get("opponent_gold", STARTING_GOLD))),
-        opponent_placements=_parse_opponent_placements(
-            raw.get("opponent_placements", []), index
-        ),
-    )
+        opponent_placements=placements,
+        dropped=llm_shop_dropped + opponent_shop_dropped + placements_dropped,
+    ), None
 
 
-def load_puzzles(path=DEFAULT_PUZZLE_PATH):
-    """Load the puzzle suite the way puzzle_loader.gd loads it.
+class SuiteNotMeasurable(ValueError):
+    """A suite file cannot be measured as the suite its file describes."""
+
+
+@dataclass(frozen=True)
+class Suite:
+    """What ``load_suite`` made of one puzzle file.
+
+    ``kept`` is what the loader kept. ``dropped`` describes, one string each,
+    the whole entries the file listed and the loader threw away. Every route to
+    the puzzles goes through ``puzzles``, which is what makes a loss impossible
+    to measure past.
+    """
+
+    path: str
+    kept: tuple
+    dropped: tuple
+
+    def puzzles(self):
+        """Every puzzle the file lists, or a refusal to hand over any of them.
+
+        A suite is measurable only if nothing the file listed was discarded.
+        The loader discards at four levels and every one of them ends up here:
+        the whole file (a root that is not a dictionary, a 'puzzles' that is not
+        an array), a whole puzzle entry (not a dictionary, no id, no readable
+        shop), a shop entry inside a kept puzzle, and a placement inside a kept
+        puzzle. The first two arrive as ``dropped`` and the last two as the
+        kept puzzles' own ``dropped``; nothing distinguishes them here, because
+        a measurement of a file minus any of them is a measurement of a
+        different suite.
+
+        Two further ways a file cannot be measured as itself, neither of them a
+        discard. A file that lists no puzzles produces no artifact and no count,
+        so it reads as a clean pass having measured nothing. And two puzzles
+        sharing an id have one recorded count and one artifact file between
+        them, so the second quietly replaces the first.
+
+        The game really does play a file minus its dropped entries, which is
+        why the loader still drops and carries on. Measuring one is what this
+        refuses.
+        """
+        losses = list(self.dropped)
+        for puzzle in self.kept:
+            losses.extend(
+                "puzzle '%s' %s" % (puzzle.id, reason) for reason in puzzle.dropped
+            )
+        if losses:
+            raise SuiteNotMeasurable(
+                "%s does not load as the suite its file describes: %s. Measuring it "
+                "would measure something the file does not state"
+                % (self.path, "; ".join(losses))
+            )
+        if not self.kept:
+            raise SuiteNotMeasurable(
+                "%s lists no puzzles, so measuring it would measure nothing and "
+                "report that as a pass" % self.path
+            )
+        repeated = sorted(
+            puzzle_id
+            for puzzle_id, count in Counter(p.id for p in self.kept).items()
+            if count > 1
+        )
+        if repeated:
+            raise SuiteNotMeasurable(
+                "%s lists more than one puzzle under each of these ids: %s. An id is "
+                "how a puzzle is named in every count and every artifact file, so two "
+                "puzzles cannot share one"
+                % (self.path, ", ".join("'%s'" % puzzle_id for puzzle_id in repeated))
+            )
+        return self.kept
+
+
+def load_suite(path=DEFAULT_PUZZLE_PATH):
+    """Load a puzzle file the way puzzle_loader.gd's load_puzzles loads it.
 
     An entry the GDScript rejects with push_error is dropped here too, with the
     same reason on stderr. The game plays the file minus those entries, so an
     oracle that either refused the whole file or kept them would be measuring a
     different game from the one being studied.
+
+    What comes back is a ``Suite`` rather than a list of puzzles, because the
+    drops have to survive loading: a dropped entry leaves nothing behind in a
+    list, and nothing downstream can then tell a suite of four puzzles from a
+    file that listed five.
     """
     with open(path) as handle:
         root = json.load(handle)
 
     if not isinstance(root, dict):
-        _warn("root JSON must be a dictionary")
-        return []
+        reason = "root JSON is not a dictionary"
+        _warn(reason)
+        return Suite(str(path), (), (reason,))
     raw_puzzles = root.get("puzzles", [])
     if not isinstance(raw_puzzles, list):
-        _warn("'puzzles' must be an array")
-        return []
+        reason = "'puzzles' is not an array"
+        _warn(reason)
+        return Suite(str(path), (), (reason,))
 
     puzzles = []
+    dropped = []
     for index, raw in enumerate(raw_puzzles):
         if not isinstance(raw, dict):
-            _warn("puzzle entry at index %d is not a dictionary" % index)
+            reason = "puzzle entry at index %d is not a dictionary" % index
+            _warn(reason)
+            dropped.append(reason)
             continue
-        puzzle = _parse_scenario(raw, index)
-        if puzzle is not None:
+        puzzle, reason = _parse_scenario(raw, index)
+        if puzzle is None:
+            dropped.append(reason)
+        else:
             puzzles.append(puzzle)
-    return puzzles
+    return Suite(str(path), tuple(puzzles), tuple(dropped))
 
 
 # --- The action space ---
@@ -370,6 +512,64 @@ def simulate_prep(puzzle, play):
     return _run_prep(puzzle, tuple(engine.UNIT_COSTS[p.unit_type] for p in play))
 
 
+class QueueDoesNotLand(ValueError):
+    """A puzzle does not field the opponent units it lists."""
+
+
+def check_queue_lands(puzzle):
+    """Raise unless every opponent placement the puzzle lists reaches the board.
+
+    A puzzle must field the units it lists, and a placement the loader kept can
+    still go missing two ways at run time: the opponent consumes the queue entry
+    and refuses it (unaffordable, off-shop, or onto a taken square), or the
+    opponent is marked done and never consumes the rest. Either way the puzzle
+    fields fewer units than it reads as, so it is a different, easier puzzle
+    than the one described.
+
+    A placement the loader threw away is the third way, and it is not checked
+    here: it is a loss against the file rather than against the queue, so
+    ``Suite.puzzles`` refuses the whole suite for it, along with every other
+    level the loader can discard at. That is why this counts against
+    ``opponent_placements`` alone, and why it says the same thing about a puzzle
+    built in memory as about one read from a file.
+
+    One play is enough. The opponent's gold, queue and occupancy never touch
+    agent state and the two sides place on disjoint rows, so the units the
+    opponent fields are the same under every play; only the placement orders
+    differ.
+    """
+    result = simulate_prep(puzzle, next(enumerate_plays(puzzle)))
+    landed = len(result.opponent_units)
+    listed = len(puzzle.opponent_placements)
+    if landed == listed:
+        return
+
+    detail = []
+    if result.refused:
+        detail.append(
+            "consumed and refused: %s" % _format_placements(result.refused)
+        )
+    unconsumed = puzzle.opponent_placements[landed + len(result.refused) :]
+    if unconsumed:
+        detail.append(
+            "never consumed, the opponent was done first: %s"
+            % _format_placements(unconsumed)
+        )
+    raise QueueDoesNotLand(
+        "puzzle %s fields %d of the %d opponent placements it lists; %s. "
+        "The queue costs %d gold against %d, shop %s"
+        % (
+            puzzle.id,
+            landed,
+            listed,
+            "; ".join(detail),
+            sum(engine.UNIT_COSTS[p.unit_type] for p in puzzle.opponent_placements),
+            puzzle.opponent_gold,
+            _shop_label(puzzle.opponent_shop),
+        )
+    )
+
+
 def build_board(puzzle, play):
     """The starting board a play produces, ready for ``engine.run_battle``."""
     result = simulate_prep(puzzle, play)
@@ -385,19 +585,8 @@ def build_board(puzzle, play):
 # --- CLI ---
 
 
-def _format_placements(placements):
-    return " ".join(
-        "%s(%d,%d)" % (engine.TYPE_LABELS[unit_type], pos[0], pos[1])
-        for unit_type, pos in placements
-    )
-
-
-def _shop_label(types):
-    return "/".join(engine.TYPE_LABELS[t] for t in types)
-
-
 def main():
-    for puzzle in load_puzzles():
+    for puzzle in load_suite().puzzles():
         # One pass over the whole action space, collecting the count and every
         # distinct opponent outcome, so the opponent lines below are measured
         # across all plays rather than read off one of them. Placement orders are

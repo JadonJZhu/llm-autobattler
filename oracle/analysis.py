@@ -24,6 +24,13 @@ rather than trusting the algebra.
 Plays are keyed as strings ("A@0,0|D@1,2", the empty prefix as "") so that an
 analysis loaded back from its JSON artifact scores plays exactly as one held in
 memory does.
+
+An output directory holds the analysis of exactly one suite. The CLI writes one
+``puzzle_<id>.json`` per puzzle and a ``suite.json`` naming the suite and the
+definition every artifact was built from, and it removes any artifact left over
+from a suite analysed there before. ``load_analysis`` reads that manifest and
+refuses an artifact it does not vouch for, so a reader who did not run the
+analysis cannot score plays against a landscape of some other puzzle.
 """
 
 import argparse
@@ -38,18 +45,40 @@ from typing import NamedTuple
 import engine
 import prep
 
-# The action space of each puzzle in the game's own suite. The three counts were
-# agreed on by a hand derivation, by this enumeration, and by driving all 11,550
-# plays through the real headless TurnManager, Shop and GameBoard, so they record
-# what the shipped suite measured. They detect change rather than establish
-# correctness: a mismatch means the puzzle file or the prep port moved under the
-# study, which invalidates every landscape built before the move, so the CLI
-# writes nothing at all rather than artifacts that silently describe a different
-# game. An id named here and missing from the shipped suite is the same failure
-# wearing a rename, so it is fatal too.
-EXPECTED_PLAY_COUNTS = {"1": 3240, "2": 1080, "3": 7230}
+# (plays, wins) for each puzzle in the game's own suite, which is no longer the
+# study's experimental suite but the fixture the oracle is checked against. The
+# three play counts were agreed on by a hand derivation, by this enumeration, and
+# by driving all 11,550 plays through the real headless TurnManager, Shop and
+# GameBoard. The three win counts are what this module's landscape pass measured
+# over the shipped file on 2026-09-08, and generate.py's separate counter agrees
+# with all six under ``generate.py self-check``.
+#
+# They detect change rather than establish correctness: a mismatch means the
+# puzzle file, the prep port or the engine moved under the study, which
+# invalidates every landscape built before the move, so the CLI writes nothing at
+# all rather than artifacts that silently describe a different game. An id named
+# here and missing from the shipped suite is the same failure wearing a rename,
+# so it is fatal too.
+#
+# The play count is an agent-side number: it follows from the agent's gold and
+# shop and from nothing the opponent does. The win count is what carries the
+# opponent, so a moved unit, a swapped type or a changed opponent shop that still
+# fields every listed unit is caught here and nowhere else. An opponent that does
+# NOT field what it lists is caught by prep.check_queue_lands instead, and
+# anything the loader discarded, at any level, by prep.Suite.puzzles; both are
+# properties rather than golden numbers and hold for any suite, shipped or
+# generated.
+EXPECTED_COUNTS = {"1": (3240, 103), "2": (1080, 4), "3": (7230, 311)}
 
 DEFAULT_OUT_DIR = Path(__file__).resolve().parent / "artifacts"
+
+# What the CLI writes into the output directory, and the only names it removes
+# from one. The manifest names the suite and holds every artifact's puzzle
+# fingerprint, which is what ties an artifact to a suite rather than to a
+# filename: generate.py names its puzzles by attempt number, so two suites at
+# different seeds both hold a "gen1" and the name says nothing about which.
+MANIFEST_NAME = "suite.json"
+ARTIFACT_GLOB = "puzzle_*.json"
 
 _KEY_SEPARATOR = "|"
 
@@ -65,7 +94,7 @@ _TIMING_METHOD = (
 def is_shipped_suite(path):
     """Whether ``path`` is the game's own suite, the one the counts describe.
 
-    EXPECTED_PLAY_COUNTS holds the action space of the shipped puzzles and of no
+    EXPECTED_COUNTS holds the measured counts of the shipped puzzles and of no
     others, so the shipped file is exactly where every id in it must be present
     and match. A suite from anywhere else has no expected counts; a generated one
     is instead checked against the counts it records for itself, which is what
@@ -82,7 +111,7 @@ def recorded_counts(path):
     this module's enumeration is two independent counts of one action space, so a
     disagreement means one of the two enumerations is wrong. A file that records
     neither, the shipped suite among them, yields nothing here and is checked
-    against EXPECTED_PLAY_COUNTS alone.
+    against EXPECTED_COUNTS alone.
     """
     with open(path) as handle:
         root = json.load(handle)
@@ -115,13 +144,13 @@ def encode_play(play):
 def puzzle_fingerprint(puzzle):
     """The loaded puzzle definition as plain JSON-safe data.
 
-    This is the definition in full as ``prep.load_puzzles`` produced it, so a
+    This is the definition in full as ``prep.load_suite`` produced it, so a
     landscape can be matched against the suite it claims to describe instead of
     being taken on trust. It does not fingerprint the prep port or the engine;
     the play-count check is what catches those changing.
 
     ``loader_difficulty`` is the integer ``difficulty`` field as
-    ``prep.load_puzzles`` produced it, which is the only difficulty either loader
+    ``prep.load_suite`` produced it, which is the only difficulty either loader
     reads. It is not the win fraction the artifact reports as ``difficulty``, and
     carries a different name so the two cannot be confused for each other. What
     it counts is a rank within one file, 1 for the easiest by win fraction to N
@@ -338,9 +367,18 @@ def _check_decomposition(analysis, puzzle):
 def analyze_puzzle(puzzle):
     """The full landscape of one puzzle, checked and timed.
 
-    Enumerates once, then verifies the decomposition over every play and
-    measures the per-simulation cost.
+    Requires the puzzle to field every opponent placement it lists, then
+    enumerates once, verifies the decomposition over every play, and measures
+    the per-simulation cost. The queue check is here rather than in the CLI
+    because this is where a puzzle becomes a value landscape, so no caller can
+    reach a landscape of a puzzle that quietly fields fewer units than it reads
+    as.
+
+    Raises ``prep.QueueDoesNotLand`` for such a puzzle rather than returning a
+    landscape of it, because every number below would then describe a different
+    puzzle from the one the suite file states.
     """
+    prep.check_queue_lands(puzzle)
     play_values, prefix_values, distribution, win_count, elapsed = _build_landscape(
         puzzle
     )
@@ -391,10 +429,68 @@ def artifact(analysis):
     }
 
 
+class ArtifactNotCurrent(ValueError):
+    """An artifact is not part of the suite its output directory describes."""
+
+
+def manifest(suite_path, analyses):
+    """What ``suite.json`` records about the directory it sits in.
+
+    The suite it was built from, and the definition behind every artifact
+    beside it. Fingerprints rather than ids because an id names a puzzle only
+    within one file, so it cannot tell one suite's ``gen1`` from another's.
+    """
+    return {
+        "suite": str(Path(suite_path).resolve()),
+        "puzzles": {
+            analysis.puzzle_id: analysis.puzzle for analysis in analyses
+        },
+    }
+
+
 def load_analysis(path):
-    """A PuzzleAnalysis read back from an artifact, ready to score plays."""
+    """A PuzzleAnalysis read back from an artifact, ready to score plays.
+
+    Raises ``ArtifactNotCurrent`` unless the ``suite.json`` beside the artifact
+    vouches for it: the artifact must be one of the suite's puzzles, and the
+    definition it was built from must be the one the manifest records. An
+    artifact left behind by an earlier suite fails the first test and one
+    rebuilt from a changed puzzle fails the second, so a landscape read back
+    here describes the suite the directory describes or nothing at all.
+    """
+    path = Path(path)
+    manifest_path = path.parent / MANIFEST_NAME
+    try:
+        with open(manifest_path) as handle:
+            described = json.load(handle)["puzzles"]
+    except FileNotFoundError:
+        raise ArtifactNotCurrent(
+            "%s has no %s, so there is nothing saying which suite %s belongs to"
+            % (path.parent, MANIFEST_NAME, path.name)
+        ) from None
+
     with open(path) as handle:
         data = json.load(handle)
+
+    expected = described.get(data["puzzle_id"])
+    if expected is None:
+        raise ArtifactNotCurrent(
+            "%s describes puzzle %s, which is not in the suite %s describes (%s). "
+            "It is left over from an earlier suite analysed into this directory"
+            % (
+                path,
+                data["puzzle_id"],
+                manifest_path,
+                ", ".join(sorted(described)) or "no puzzles",
+            )
+        )
+    if expected != data["puzzle"]:
+        raise ArtifactNotCurrent(
+            "%s was built from a different definition of puzzle %s than the one %s "
+            "records, so its landscape describes a puzzle the suite no longer states"
+            % (path, data["puzzle_id"], manifest_path)
+        )
+
     return PuzzleAnalysis(
         puzzle_id=data["puzzle_id"],
         puzzle=data["puzzle"],
@@ -425,33 +521,47 @@ def main():
     parser.add_argument(
         "--out-dir",
         default=DEFAULT_OUT_DIR,
-        help="directory to write puzzle_<id>.json into (default: oracle/artifacts)",
+        help="directory to hold this suite's artifacts (default: oracle/artifacts). "
+        "It is managed, not appended to: suite.json and any puzzle_*.json left "
+        "from another suite are removed",
     )
     args = parser.parse_args()
 
     shipped = is_shipped_suite(args.puzzles)
     recorded = recorded_counts(args.puzzles)
 
+    try:
+        puzzles = prep.load_suite(args.puzzles).puzzles()
+    except prep.SuiteNotMeasurable as error:
+        print("%s" % error, file=sys.stderr)
+        print("no artifacts written", file=sys.stderr)
+        return 1
+
     analyses = []
     miscounted = []
     disagreed = []
-    for puzzle in prep.load_puzzles(args.puzzles):
-        analysis = analyze_puzzle(puzzle)
+    unlanded = []
+    for puzzle in puzzles:
+        try:
+            analysis = analyze_puzzle(puzzle)
+        except prep.QueueDoesNotLand as error:
+            unlanded.append(error)
+            continue
         analyses.append(analysis)
 
-        expected = EXPECTED_PLAY_COUNTS.get(puzzle.id) if shipped else None
-        if expected is not None and analysis.play_count != expected:
-            miscounted.append((puzzle.id, analysis.play_count, expected))
+        counted = (analysis.play_count, analysis.win_count)
+        expected = EXPECTED_COUNTS.get(puzzle.id) if shipped else None
+        if expected is not None and counted != expected:
+            miscounted.append((puzzle.id, counted, expected))
 
         own = recorded.get(puzzle.id)
-        counted = (analysis.play_count, analysis.win_count)
         if own is not None and own != counted:
             disagreed.append((puzzle.id, counted, own))
 
         print("puzzle %s" % analysis.puzzle_id)
         print("  %d complete legal plays" % analysis.play_count)
         if shipped and expected is None:
-            print("  play count unchecked: this id is new to the shipped suite")
+            print("  counts unchecked: this id is new to the shipped suite")
         if own == counted:
             print("  play and win counts agree with the suite file's own record")
         print(
@@ -474,8 +584,8 @@ def main():
             % (analysis.simulation_seconds * 1e6, analysis.enumeration_seconds)
         )
 
-    analysed_ids = {analysis.puzzle_id for analysis in analyses}
-    absent = sorted(set(EXPECTED_PLAY_COUNTS) - analysed_ids) if shipped else []
+    suite_ids = {puzzle.id for puzzle in puzzles}
+    absent = sorted(set(EXPECTED_COUNTS) - suite_ids) if shipped else []
     if not shipped:
         checked = sum(1 for analysis in analyses if analysis.puzzle_id in recorded)
         if checked:
@@ -486,22 +596,25 @@ def main():
             )
         else:
             print(
-                "play counts unchecked: %s is not the shipped suite and records no "
+                "counts unchecked: %s is not the shipped suite and records no "
                 "counts of its own" % args.puzzles
             )
 
-    if miscounted or absent or disagreed:
-        for puzzle_id, actual, expected in miscounted:
+    if miscounted or absent or disagreed or unlanded:
+        for error in unlanded:
+            print("not analysed: %s" % error, file=sys.stderr)
+        for puzzle_id, counted, expected in miscounted:
             print(
-                "puzzle %s enumerated %d plays, expected %d: the puzzle file or the "
-                "prep port has changed and this landscape describes a different "
-                "action space" % (puzzle_id, actual, expected),
+                "puzzle %s enumerated %d plays of which %d win, expected %d and %d: "
+                "the puzzle file, the prep port or the engine has changed and this "
+                "landscape describes a different game"
+                % (puzzle_id, counted[0], counted[1], expected[0], expected[1]),
                 file=sys.stderr,
             )
         for puzzle_id in absent:
             print(
-                "puzzle %s has an expected play count but is not in the suite, so "
-                "its action space went unchecked" % puzzle_id,
+                "puzzle %s has expected counts but is not in the suite, so it went "
+                "unchecked" % puzzle_id,
                 file=sys.stderr,
             )
         for puzzle_id, counted, own in disagreed:
@@ -515,13 +628,38 @@ def main():
         print("no artifacts written", file=sys.stderr)
         return 1
 
-    out_dir = Path(args.out_dir)
+    return write_artifacts(Path(args.out_dir), args.puzzles, analyses)
+
+
+def write_artifacts(out_dir, suite_path, analyses):
+    """Make ``out_dir`` the analysis of exactly this suite and nothing else.
+
+    The manifest goes first, so that a run interrupted part way through leaves a
+    directory ``load_analysis`` refuses rather than one that vouches for
+    artifacts it no longer holds. Then every artifact of an earlier suite is
+    removed, because a landscape of a puzzle this suite does not contain has
+    nothing in the directory to contradict it and reads as current. Only
+    ``suite.json`` and ``puzzle_*.json`` are ever removed.
+    """
     out_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = out_dir / MANIFEST_NAME
+    manifest_path.unlink(missing_ok=True)
+
+    written = {"puzzle_%s.json" % analysis.puzzle_id for analysis in analyses}
+    for stale in sorted(out_dir.glob(ARTIFACT_GLOB)):
+        if stale.name not in written:
+            stale.unlink()
+            print("removed %s, which is not part of this suite" % stale)
+
     for analysis in analyses:
         out_path = out_dir / ("puzzle_%s.json" % analysis.puzzle_id)
         with open(out_path, "w") as handle:
             json.dump(artifact(analysis), handle, indent=1, sort_keys=True)
         print("wrote %s" % out_path)
+
+    with open(manifest_path, "w") as handle:
+        json.dump(manifest(suite_path, analyses), handle, indent=1, sort_keys=True)
+    print("wrote %s, which is what says these artifacts are %s's" % (manifest_path, suite_path))
     return 0
 
 
