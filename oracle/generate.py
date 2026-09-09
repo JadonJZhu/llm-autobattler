@@ -39,11 +39,12 @@ DIFFICULTY here is ``analysis``'s: the fraction of complete legal plays that
 win, a win being ``llm_score > human_score``. ``self-check`` runs this module's
 counter and ``analysis.analyze_puzzle`` over the shipped suite and requires them
 to agree, which is what says the two are the same measurement. It also requires
-every shipped puzzle to field the placements its file lists, and fires both
-guards against a puzzle being measured as something its file does not describe
-on fixtures of its own: three for a listed placement that never reaches the
-board, one per way it can go missing, and three for a whole puzzle that never
-reaches a measurement.
+every shipped puzzle to field the placements its file lists, and fires on
+fixtures of its own every guard against a puzzle being measured, or read back
+later, as something its file does not describe: one per way a listed placement
+can fail to reach the board, one per way a whole puzzle can fail to reach a
+measurement, and one per way a written landscape can stop describing what a
+reader of it would compute.
 
 EVERY SECONDS FIGURE IS WALL CLOCK on whatever machine and load the run met.
 ``study`` re-enumerates one puzzle several times and prints how far apart those
@@ -62,6 +63,9 @@ the machine.
 """
 
 import argparse
+import contextlib
+import copy
+import io
 import json
 import math
 import random
@@ -1082,9 +1086,82 @@ def _unmeasurable_fixtures():
             yield description, path
 
 
+def _stale_artifact_fixtures():
+    """Analysis directories whose artifacts no longer say what a reader computes.
+
+    ``analysis.load_analysis`` must refuse every one of them, and a guard that
+    has never been seen to fire is not known to work. There is one case per way
+    the ground under a written artifact moves: the suite file restates its
+    puzzle, the suite file stops listing its puzzle, the oracle that computed
+    its numbers is not the oracle reading them, and the manifest that names the
+    suite stops reading as one.
+
+    Each case is a directory the real writer built from a puzzle small enough to
+    enumerate in milliseconds, moved out from under afterwards. The third case
+    rewrites the fingerprint the artifact recorded rather than editing a source
+    file, which is what an artifact from any earlier oracle looks like on disk:
+    the guard compares recorded against current and cannot tell the two apart.
+
+    Yields ``(what moved, artifact path)``.
+    """
+    puzzle = {
+        "id": "staged",
+        "difficulty": 1,
+        "llm_shop": ["A"],
+        "llm_gold": 1,
+        "opponent_shop": ["A"],
+        "opponent_gold": 2,
+        "opponent_placements": [
+            {"type": "A", "row": 2, "col": 0},
+            {"type": "A", "row": 2, "col": 1},
+        ],
+    }
+
+    def restate_the_puzzle(suite, root, artifact_path):
+        root["puzzles"][0]["opponent_placements"].append(
+            {"type": "A", "row": 2, "col": 2}
+        )
+        suite.write_text(json.dumps(root))
+
+    def drop_the_puzzle(suite, root, artifact_path):
+        root["puzzles"][0]["id"] = "renamed"
+        suite.write_text(json.dumps(root))
+
+    def age_the_oracle(suite, root, artifact_path):
+        built = json.loads(artifact_path.read_text())
+        built["code"] = "0" * len(built["code"])
+        artifact_path.write_text(json.dumps(built))
+
+    def truncate_the_manifest(suite, root, artifact_path):
+        manifest = artifact_path.parent / analysis.MANIFEST_NAME
+        manifest.write_text(manifest.read_text()[:12])
+
+    cases = [
+        ("a suite file that restates the artifact's puzzle", restate_the_puzzle),
+        ("a suite file that no longer lists the artifact's puzzle", drop_the_puzzle),
+        ("an artifact built by another version of the oracle", age_the_oracle),
+        ("a manifest that no longer reads as one", truncate_the_manifest),
+    ]
+    with tempfile.TemporaryDirectory() as directory:
+        for index, (description, move) in enumerate(cases):
+            staged = Path(directory) / ("staged-%d" % index)
+            staged.mkdir()
+            suite = staged / "suite_file.json"
+            root = {"puzzles": [copy.deepcopy(puzzle)]}
+            suite.write_text(json.dumps(root))
+
+            landscape = analysis.analyze_puzzle(prep.load_suite(suite).puzzles()[0])
+            with contextlib.redirect_stdout(io.StringIO()):
+                analysis.write_artifacts(staged / "artifacts", suite, [landscape])
+
+            artifact_path = staged / "artifacts" / ("puzzle_%s.json" % puzzle["id"])
+            move(suite, root, artifact_path)
+            yield description, artifact_path
+
+
 def _self_check(args):
     """Hold ``evaluate`` to ``analysis.analyze_puzzle`` on the shipped suite, and
-    fire both loss guards on fixtures of this module's own.
+    fire the loss and staleness guards on fixtures of this module's own.
 
     The shipped suite is the fixture the oracle is checked against, so the two
     things that must be true of it are that the two enumerations agree about its
@@ -1095,6 +1172,10 @@ def _self_check(args):
 
     Loading the suite is itself the third check, since ``prep.Suite.puzzles``
     refuses a file that does not load as the suite it describes.
+
+    The staleness fixtures are the same idea one stage later: a landscape is
+    written, the suite or the oracle behind it moves, and
+    ``analysis.load_analysis`` must refuse to hand the numbers back.
 
     Any suite may be passed, and a legal one passes whatever its opponents
     queue, including nothing at all.
@@ -1146,6 +1227,15 @@ def _self_check(args):
         else:
             print("GUARD DID NOT FIRE on %s, %s" % (description, path))
             failed = True
+
+    for description, path in _stale_artifact_fixtures():
+        try:
+            analysis.load_analysis(path)
+        except analysis.ArtifactNotCurrent as error:
+            print("guard fires on %s: %s" % (description, error))
+        else:
+            print("GUARD DID NOT FIRE on %s, %s" % (description, path))
+            failed = True
     return 1 if failed else 0
 
 
@@ -1182,7 +1272,8 @@ def main():
     check = sub.add_parser(
         "self-check",
         help="require this module's difficulty to match analysis's, require every "
-        "puzzle to field what its file lists, and fire the queue guard on fixtures",
+        "puzzle to field what its file lists, and fire the queue, loading and "
+        "artifact-staleness guards on fixtures",
     )
     check.add_argument("--puzzles", default=prep.DEFAULT_PUZZLE_PATH)
     check.set_defaults(handler=_self_check)

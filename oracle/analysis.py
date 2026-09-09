@@ -26,16 +26,28 @@ analysis loaded back from its JSON artifact scores plays exactly as one held in
 memory does.
 
 An output directory holds the analysis of exactly one suite. The CLI writes one
-``puzzle_<id>.json`` per puzzle and a ``suite.json`` naming the suite and the
-definition every artifact was built from, and it removes any artifact left over
-from a suite analysed there before. ``load_analysis`` reads that manifest and
-refuses an artifact it does not vouch for, so a reader who did not run the
-analysis cannot score plays against a landscape of some other puzzle.
+``puzzle_<id>.json`` per puzzle and a ``suite.json`` naming the suite file they
+were built from, and it removes any artifact left over from a suite analysed
+there before.
+
+``load_analysis`` refuses an artifact whose numbers are not the numbers the
+reader would get by running the analysis now. Three things decide those numbers:
+the puzzle definition, which the artifact carries; the suite file, which the
+manifest names and which is re-read and re-loaded on every read, since a copy
+taken when the artifact was written would agree with it forever; and the code,
+which every artifact records as ``code``, the sha256 of the source of every
+module this one reaches by import. So a reader who did not run the analysis
+cannot score plays against a landscape of another puzzle, of a suite the file no
+longer states, or of rules this code no longer implements.
 """
 
 import argparse
+import ast
+import hashlib
+import importlib.util
 import json
 import sys
+import sysconfig
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
@@ -73,12 +85,134 @@ EXPECTED_COUNTS = {"1": (3240, 103), "2": (1080, 4), "3": (7230, 311)}
 DEFAULT_OUT_DIR = Path(__file__).resolve().parent / "artifacts"
 
 # What the CLI writes into the output directory, and the only names it removes
-# from one. The manifest names the suite and holds every artifact's puzzle
-# fingerprint, which is what ties an artifact to a suite rather than to a
-# filename: generate.py names its puzzles by attempt number, so two suites at
-# different seeds both hold a "gen1" and the name says nothing about which.
+# from one. The manifest names the suite file, which is what ties a directory to
+# a suite rather than to a set of filenames: generate.py names its puzzles by
+# attempt number, so two suites at different seeds both hold a "gen1" and the
+# name says nothing about which.
 MANIFEST_NAME = "suite.json"
 ARTIFACT_GLOB = "puzzle_*.json"
+
+# The source of every number in an artifact. Its bytes ARE the version, so
+# nothing has to be remembered or bumped and no edit to any of it can go
+# unrecorded. It is deliberately blunt: a comment moved anywhere in it reads as
+# a different oracle and costs a re-run, which is the price of a fingerprint
+# that cannot be wrong in the other direction.
+#
+# Which files those are is read out of the import statements rather than listed
+# here, because a list is only ever right about the code that existed when it
+# was written: a module split out of engine or prep later would hold rules that
+# decide the numbers and be fingerprinted by nobody.
+#
+# REACHED BY IMPORT FROM THIS MODULE is the membership rule, not loaded beside
+# it. A module can only change these numbers if this one can call into it, and
+# an import written inside a function body is an import statement like any
+# other, so following the statements covers a module reached only lazily. The
+# other direction matters as much: generate.py and equivalence.py import this
+# module, and are loaded whenever they are the command being run, but nothing
+# here can reach them and none of their code decides a number. Hashing what
+# happens to be loaded would make an artifact written by generate.py unreadable
+# by analysis.py, which is a false alarm rather than a caught change.
+#
+# A name is resolved to the file this interpreter has for it, so a run against a
+# different copy of prep or engine fingerprints that copy. What resolves into
+# the interpreter's own library tree is left out, so THE FINGERPRINT COVERS THIS
+# PROJECT'S CODE AND NOT THE PYTHON IT RUNS ON: a standard library or installed
+# package that changed under the oracle reads as unchanged here.
+_INTERPRETER_LIBRARY = tuple(
+    Path(sysconfig.get_paths()[location]).resolve()
+    for location in ("stdlib", "platstdlib", "purelib", "platlib")
+)
+
+
+def _imported_modules(source, path):
+    """What one source file imports, as ``(module, names taken out of it)``.
+
+    ``ast.walk`` reaches an import wherever it is written, so an import inside a
+    function body counts the same as one at the top of the file. The names of a
+    ``from X import Y`` come back beside X because Y may itself be a module, and
+    are only worth resolving when X turns out to be ours.
+    """
+    for node in ast.walk(ast.parse(source, filename=str(path))):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                yield alias.name, ()
+        elif isinstance(node, ast.ImportFrom):
+            if node.level:
+                raise ImportError(
+                    "%s uses a relative import, which the oracle's flat layout "
+                    "cannot run and this cannot resolve to a file" % path
+                )
+            yield node.module, tuple(alias.name for alias in node.names)
+
+
+def _source_file(name, required, importer):
+    """The file behind a module name, or None if it is not this project's code.
+
+    ``sys.modules`` is asked first so that a module already imported is
+    fingerprinted as the copy that was imported, which is what equivalence.py's
+    ``--engine`` substitutes. A name the source states as a module and this
+    cannot resolve is a hole in the fingerprint, so it is raised rather than
+    passed over; a ``from X import Y`` name is not required to be one.
+    """
+    module = sys.modules.get(name)
+    if module is not None:
+        origin = getattr(module, "__file__", None)
+    else:
+        try:
+            spec = importlib.util.find_spec(name)
+        except (ImportError, ValueError):
+            spec = None
+        if spec is None:
+            if required:
+                raise ImportError(
+                    "%s imports %s, which nothing on this interpreter resolves, so "
+                    "the code behind the numbers cannot be fingerprinted whole"
+                    % (importer, name)
+                )
+            return None
+        origin = spec.origin
+    if origin is None:
+        # Built in, frozen, or a namespace package: no source to hash.
+        return None
+    origin = Path(origin).resolve()
+    if any(origin.is_relative_to(location) for location in _INTERPRETER_LIBRARY):
+        return None
+    return origin
+
+
+def _code_fingerprint():
+    """sha256 over the source of every module these numbers can come from.
+
+    Ordered by content, so the fingerprint is a function of the code and of
+    nothing else: not of where the files sit, not of the order they were
+    imported in, not of which command was run.
+    """
+    sources = {}
+    pending = [Path(__file__)]
+    while pending:
+        path = pending.pop().resolve()
+        if path in sources:
+            continue
+        source = path.read_bytes()
+        sources[path] = source
+        for name, attributes in _imported_modules(source, path):
+            found = _source_file(name, True, path)
+            if found is None:
+                # Not ours, so nothing inside it is ours either.
+                continue
+            if found not in sources:
+                pending.append(found)
+            for attribute in attributes:
+                submodule = _source_file("%s.%s" % (name, attribute), False, path)
+                if submodule is not None and submodule not in sources:
+                    pending.append(submodule)
+    digest = hashlib.sha256()
+    for source in sorted(sources.values()):
+        digest.update(hashlib.sha256(source).digest())
+    return digest.hexdigest()
+
+
+CODE_FINGERPRINT = _code_fingerprint()
 
 _KEY_SEPARATOR = "|"
 
@@ -406,10 +540,16 @@ def analyze_puzzle(puzzle):
 
 
 def artifact(analysis):
-    """The analysis as the JSON a later stage consumes without re-enumerating."""
+    """The analysis as the JSON a later stage consumes without re-enumerating.
+
+    ``puzzle`` is the definition the numbers were computed from and ``code`` the
+    oracle that computed them. Together with the suite file the manifest names,
+    they are what ``load_analysis`` holds the numbers to.
+    """
     return {
         "puzzle_id": analysis.puzzle_id,
         "puzzle": analysis.puzzle,
+        "code": CODE_FINGERPRINT,
         "win_rule": "llm_score > human_score, from puzzle_runner.gd "
         "record_attempt_result",
         "value_rule": "llm_score - human_score at the end of the battle",
@@ -430,65 +570,135 @@ def artifact(analysis):
 
 
 class ArtifactNotCurrent(ValueError):
-    """An artifact is not part of the suite its output directory describes."""
+    """An artifact does not describe what a reader of it would compute now."""
 
 
-def manifest(suite_path, analyses):
+def manifest(suite_path):
     """What ``suite.json`` records about the directory it sits in.
 
-    The suite it was built from, and the definition behind every artifact
-    beside it. Fingerprints rather than ids because an id names a puzzle only
-    within one file, so it cannot tell one suite's ``gen1`` from another's.
+    The suite file the artifacts beside it were built from, and nothing else.
+    Copying the puzzle definitions in here as well would put a second answer
+    beside the file's own, written by the run that wrote the artifacts and so
+    agreeing with them whatever the file later says.
     """
-    return {
-        "suite": str(Path(suite_path).resolve()),
-        "puzzles": {
-            analysis.puzzle_id: analysis.puzzle for analysis in analyses
-        },
-    }
+    return {"suite": str(Path(suite_path).resolve())}
+
+
+def _described_suite(manifest_path):
+    """The suite an output directory describes, loaded as the reader has it now.
+
+    Returns the suite file's path and its puzzles. The manifest names the file;
+    the puzzles come out of that file through ``prep.load_suite``, so what an
+    artifact is compared against is the suite as it stands and as the game's own
+    loader reads it, rather than anything recorded alongside the artifact.
+    """
+    try:
+        with open(manifest_path) as handle:
+            suite_path = json.load(handle)["suite"]
+    except FileNotFoundError:
+        raise ArtifactNotCurrent(
+            "%s has no %s, so nothing says which suite the artifacts in it belong to"
+            % (manifest_path.parent, MANIFEST_NAME)
+        ) from None
+    except (json.JSONDecodeError, KeyError) as error:
+        detail = (
+            "it has no 'suite' key"
+            if isinstance(error, KeyError)
+            else "it is not JSON: %s" % error
+        )
+        raise ArtifactNotCurrent(
+            "%s does not read as a manifest, %s, so nothing names the suite the "
+            "artifacts beside it were built from. A run killed while writing it "
+            "leaves this; re-run analysis.py over the suite"
+            % (manifest_path, detail)
+        ) from None
+
+    try:
+        return suite_path, prep.load_suite(suite_path).puzzles()
+    except FileNotFoundError:
+        raise ArtifactNotCurrent(
+            "%s names %s as the suite these artifacts describe, and that file is "
+            "not there, so nothing can say whether they still describe it"
+            % (manifest_path, suite_path)
+        ) from None
+    except prep.SuiteNotMeasurable as error:
+        raise ArtifactNotCurrent(
+            "the artifacts in %s cannot be held to the suite they name: %s"
+            % (manifest_path.parent, error)
+        ) from None
+
+
+def _definition_diff(built_from, stated):
+    """Every field where two fingerprints of one puzzle differ, with both values."""
+    return "; ".join(
+        "%s is %s in the artifact and %s in the file"
+        % (field, built_from.get(field), stated.get(field))
+        for field in sorted(set(built_from) | set(stated))
+        if built_from.get(field) != stated.get(field)
+    )
 
 
 def load_analysis(path):
     """A PuzzleAnalysis read back from an artifact, ready to score plays.
 
-    Raises ``ArtifactNotCurrent`` unless the ``suite.json`` beside the artifact
-    vouches for it: the artifact must be one of the suite's puzzles, and the
-    definition it was built from must be the one the manifest records. An
-    artifact left behind by an earlier suite fails the first test and one
-    rebuilt from a changed puzzle fails the second, so a landscape read back
-    here describes the suite the directory describes or nothing at all.
+    Raises ``ArtifactNotCurrent`` unless the numbers in the artifact are the
+    numbers this code would compute from the suite file it now has. Three things
+    decide them and all three are checked: the oracle that computed them, which
+    the artifact records as ``code``; the puzzle the suite file states today,
+    which is read back through the loader rather than taken from anything the
+    analysis run wrote; and membership, since an artifact of a puzzle the file
+    no longer lists is left over from an earlier suite.
+
+    The code fingerprint is hashed once when this module is imported, so a call
+    costs a re-read of the suite file and nothing more, which is well under a
+    millisecond against the artifact's own JSON. Reading a landscape back stays
+    the cheap path it has to be.
     """
     path = Path(path)
-    manifest_path = path.parent / MANIFEST_NAME
-    try:
-        with open(manifest_path) as handle:
-            described = json.load(handle)["puzzles"]
-    except FileNotFoundError:
-        raise ArtifactNotCurrent(
-            "%s has no %s, so there is nothing saying which suite %s belongs to"
-            % (path.parent, MANIFEST_NAME, path.name)
-        ) from None
-
     with open(path) as handle:
         data = json.load(handle)
 
-    expected = described.get(data["puzzle_id"])
+    built_by = data.get("code")
+    if built_by != CODE_FINGERPRINT:
+        raise ArtifactNotCurrent(
+            "%s was written by %s and this oracle is %.12s, so the source of some "
+            "module behind these numbers has changed since and the numbers in it may "
+            "describe an enumeration or rules this code no longer holds. Re-run "
+            "analysis.py over the suite"
+            % (
+                path,
+                "an oracle fingerprinted %.12s" % built_by
+                if built_by
+                else "an oracle that recorded no fingerprint",
+                CODE_FINGERPRINT,
+            )
+        )
+
+    suite_path, puzzles = _described_suite(path.parent / MANIFEST_NAME)
+    stated = {puzzle.id: puzzle_fingerprint(puzzle) for puzzle in puzzles}
+
+    expected = stated.get(data["puzzle_id"])
     if expected is None:
         raise ArtifactNotCurrent(
-            "%s describes puzzle %s, which is not in the suite %s describes (%s). "
-            "It is left over from an earlier suite analysed into this directory"
+            "%s describes puzzle %s, which %s does not list (it lists %s). It is "
+            "left over from an earlier suite analysed into this directory"
             % (
                 path,
                 data["puzzle_id"],
-                manifest_path,
-                ", ".join(sorted(described)) or "no puzzles",
+                suite_path,
+                ", ".join(sorted(stated)),
             )
         )
     if expected != data["puzzle"]:
         raise ArtifactNotCurrent(
-            "%s was built from a different definition of puzzle %s than the one %s "
-            "records, so its landscape describes a puzzle the suite no longer states"
-            % (path, data["puzzle_id"], manifest_path)
+            "%s was built from a definition of puzzle %s that %s no longer states: "
+            "%s. Its landscape describes a puzzle the suite does not"
+            % (
+                path,
+                data["puzzle_id"],
+                suite_path,
+                _definition_diff(data["puzzle"], expected),
+            )
         )
 
     return PuzzleAnalysis(
@@ -658,7 +868,7 @@ def write_artifacts(out_dir, suite_path, analyses):
         print("wrote %s" % out_path)
 
     with open(manifest_path, "w") as handle:
-        json.dump(manifest(suite_path, analyses), handle, indent=1, sort_keys=True)
+        json.dump(manifest(suite_path), handle, indent=1, sort_keys=True)
     print("wrote %s, which is what says these artifacts are %s's" % (manifest_path, suite_path))
     return 0
 
