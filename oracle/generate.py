@@ -26,9 +26,16 @@ This module measures that. In order:
    puzzles spread over the step 2 targets at the band. The two are different
    acceptance rules, the wider one is always cheaper, and neither number
    checks the other.
-4. A suite. Bins spanning the observed difficulty range, filled by reject
-   sampling from a fresh seed stream, capped in attempts. Its enumerations per
-   accepted puzzle price those bins and say nothing about the band of step 2.
+4. A suite. Bins filled by reject sampling from a fresh seed stream, capped in
+   attempts. Its enumerations per accepted puzzle price those bins and say
+   nothing about the band of step 2. The bins come from one of two rules, and
+   the caller picks: ``--suite-bins`` spans the range this run's own prior
+   happened to observe, which over a large sample is very nearly 0 to 1;
+   ``--suite-edges`` is the caller naming the edges outright, which is the only
+   way to ask for a band the prior did not reach, or for bins of uneven width.
+   A band the prior barely reached is priced before it is spent: step 3
+   forecasts the same edges this step fills, and says so in those words when no
+   resample of the prior could fill them.
    A candidate every play wins, or none does, is rejected however well it fills
    a bin, because it is decided before the agent chooses and so measures
    nothing about an agent. The file it writes ranks puzzles from the easiest,
@@ -101,6 +108,9 @@ OPPONENT_SQUARES = tuple(
 DEFAULT_BAND = 0.025
 
 DEFAULT_TARGETS = (0.05, 0.15, 0.30, 0.50, 0.70, 0.90)
+
+# Bins the suite uses when the caller names neither the bin count nor the edges.
+DEFAULT_SUITE_BINS = 6
 
 # Resamples behind a forecast, and re-enumerations of one puzzle behind the
 # timing spread. Both are cheap next to the prior they read.
@@ -241,6 +251,33 @@ def bin_edges(low, high, count):
     """``count`` + 1 evenly spaced edges from ``low`` to ``high``."""
     width = (high - low) / count
     return [low + width * i for i in range(count)] + [high]
+
+
+def parse_edges(text):
+    """Bin edges named on the command line, as increasing difficulties.
+
+    The other route into ``build_suite``. ``bin_edges`` spans whatever range the
+    prior sample happened to cover, so it cannot be asked for a band that sample
+    did not reach, and it spaces the bins evenly, so it cannot be asked for a
+    band whose interesting structure is not evenly spread. This route takes the
+    edges as given and does neither.
+
+    Refuses a list that names no bin, and an edge outside 0 to 1, since
+    difficulty is a fraction of plays and no puzzle can fall there. It does not
+    and cannot refuse a bin no puzzle exists in: whether a bin is reachable is
+    what the run measures, and ``report_suite`` reports it unfilled.
+    """
+    edges = [float(part) for part in text.split(",")]
+    if len(edges) < 2:
+        raise argparse.ArgumentTypeError("two edges make one bin; got %d" % len(edges))
+    if edges[0] < 0.0 or edges[-1] > 1.0:
+        raise argparse.ArgumentTypeError(
+            "difficulty is a fraction of plays, so edges lie in 0 to 1: %s" % text
+        )
+    for low, high in zip(edges, edges[1:]):
+        if high <= low:
+            raise argparse.ArgumentTypeError("edges must increase: %s" % text)
+    return edges
 
 
 def bin_index(edges, difficulty):
@@ -873,6 +910,21 @@ def _record(prior, run, timing, args):
     }
 
 
+def suite_edges(args, difficulties):
+    """The bins this run will fill: the caller's edges, or the prior's range.
+
+    The two rules are mutually exclusive at the command line, so this chooses
+    between them and never reconciles them. Where neither is named the prior's
+    own observed range is the fallback, which is what every run before this
+    option did.
+    """
+    if args.suite_edges is not None:
+        return args.suite_edges
+    return bin_edges(
+        difficulties[0], difficulties[-1], args.suite_bins or DEFAULT_SUITE_BINS
+    )
+
+
 def _study(args):
     rng = random.Random(args.seed)
 
@@ -889,8 +941,8 @@ def _study(args):
     difficulties = report_prior(prior)
     report_targets(prior, args.targets, args.band)
 
-    edges = bin_edges(difficulties[0], difficulties[-1], args.suite_bins)
-    quotas = bin_quotas(args.suite_size, args.suite_bins)
+    edges = suite_edges(args, difficulties)
+    quotas = bin_quotas(args.suite_size, len(edges) - 1)
     report_forecast(
         difficulties,
         edges,
@@ -902,6 +954,11 @@ def _study(args):
     )
 
     def suite_trace(attempts, candidate, index):
+        # Always the accepted ones, because a band the prior barely reached
+        # spends most of a long cap between them, and a run that prints nothing
+        # for an hour reads as a stall rather than as the cost it is.
+        if index is None and not args.verbose:
+            return
         print(
             "  attempt %d  difficulty %.4f  %.2f s  %s"
             % (
@@ -914,15 +971,19 @@ def _study(args):
         )
 
     run = build_suite(
-        random.Random(args.seed + 1),
-        edges,
-        quotas,
-        args.suite_cap,
-        suite_trace if args.verbose else None,
+        random.Random(args.seed + 1), edges, quotas, args.suite_cap, suite_trace
     )
     short = report_suite(run)
 
-    if args.suite_out:
+    if args.suite_out and not run.accepted_count:
+        # Every bin came up short, which the report above has already said. A
+        # file listing no puzzles is not a suite and prep refuses to load one,
+        # so writing it would leave a path that reads as a suite and is not one.
+        print(
+            "  no candidate landed in any bin, so %s was not written"
+            % args.suite_out
+        )
+    elif args.suite_out:
         written = write_suite(run, args.suite_out)
         print(
             "  wrote %d puzzles to %s, reloaded through prep.load_suite"
@@ -1260,13 +1321,34 @@ def main():
         default=DEFAULT_TARGETS,
     )
     study.add_argument("--suite-size", type=int, default=30)
-    study.add_argument("--suite-bins", type=int, default=6)
+    bins = study.add_mutually_exclusive_group()
+    bins.add_argument(
+        "--suite-bins",
+        type=int,
+        default=None,
+        help="evenly spaced bins over the range the prior sample observed "
+        "(default: %d)" % DEFAULT_SUITE_BINS,
+    )
+    bins.add_argument(
+        "--suite-edges",
+        type=parse_edges,
+        default=None,
+        help="the bin edges outright, increasing, comma separated, as in "
+        "0,0.006,0.012,0.022,0.038,0.06. The only way to ask for a band the "
+        "prior did not reach, or for bins of uneven width. Bins the cap could "
+        "not fill are reported unfilled, not widened",
+    )
     study.add_argument(
         "--suite-cap", type=int, default=300, help="enumerations before the suite gives up"
     )
     study.add_argument("--suite-out", help="write the accepted suite here")
     study.add_argument("--record-out", help="write every measurement here as JSON")
-    study.add_argument("--verbose", action="store_true", help="a line per candidate on stderr")
+    study.add_argument(
+        "--verbose",
+        action="store_true",
+        help="a line per candidate on stderr; without it the suite still reports "
+        "each candidate it accepts, so a long run shows progress",
+    )
     study.set_defaults(handler=_study)
 
     check = sub.add_parser(

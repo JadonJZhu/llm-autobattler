@@ -84,8 +84,27 @@ func clear_reasoning_summary() -> void:
 
 
 func update_human_shop_buttons(is_human_prep: bool, human_shop: Shop) -> void:
+	# The button array is built by setup() from one shop and this can be reached
+	# with a different one: turn_manager.initialize() emits prep_turn_changed,
+	# and the controller refreshes the shop UI from that signal, before the
+	# setup() call further down the same _start_game(). So on the second puzzle
+	# of a run the shop here is the new puzzle's and the buttons are still the
+	# previous puzzle's. A puzzle with a smaller opponent shop than the one
+	# before it then indexed off the end: 20 "Out of bounds get index 3" errors
+	# in one 50-attempt pilot run, gen13 with 3 opponent types after gen0 with 4.
+	#
+	# THE CORRECT BEHAVIOUR WHEN THE TWO LENGTHS DIFFER: a button past the end of
+	# the current shop stands for a type this shop does not sell, so it is
+	# disabled rather than read off the end, and a type past the end of the
+	# button array has no button to update and is left to the setup() that
+	# rebuilds the array at the right length. Neither case is silently correct
+	# for long: the array is rebuilt before the player can press anything.
+	var types: Array = human_shop.available_types
 	for i in range(_human_shop_buttons.size()):
-		var type: UnitData.UnitType = human_shop.available_types[i]
+		if i >= types.size():
+			_human_shop_buttons[i].disabled = true
+			continue
+		var type: UnitData.UnitType = types[i]
 		_human_shop_buttons[i].disabled = not is_human_prep or not human_shop.can_afford(type)
 	if not is_human_prep:
 		clear_human_selection()
