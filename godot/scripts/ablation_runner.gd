@@ -3,11 +3,14 @@ extends Node
 ## Iterates all prompt-mode configurations across all puzzle scenarios.
 ## Delegates per-puzzle attempts to PuzzleRunner via orchestration signals.
 
-signal puzzle_requested(config: LlmModeConfig, scenario, max_attempts: int)
+signal puzzle_requested(config: LlmModeConfig, scenario, max_attempts: int, play_all_attempts: bool)
 signal ablation_progress(config_label: String, puzzle_id: String, completed: int, total: int)
 signal ablation_completed(results: Dictionary)
 
 var max_attempts_per_puzzle: int = 10
+## Passed straight through to each PuzzleRunner; see play_all_attempts there for
+## what it changes and why a run would ask for it.
+var play_all_attempts: bool = false
 
 var _is_running: bool = false
 var _configs: Array[LlmModeConfig] = []
@@ -19,7 +22,8 @@ var _terminated_early: bool = false
 var _termination_reason: String = ""
 
 
-func start(puzzles: Array, attempt_limit: int = 10, configs: Array = []) -> bool:
+func start(puzzles: Array, attempt_limit: int = 10, configs: Array = [],
+		play_every_attempt: bool = false) -> bool:
 	if puzzles.is_empty():
 		push_error("AblationRunner: Cannot start with empty puzzle list.")
 		return false
@@ -40,6 +44,7 @@ func start(puzzles: Array, attempt_limit: int = 10, configs: Array = []) -> bool
 	_terminated_early = false
 	_termination_reason = ""
 	max_attempts_per_puzzle = maxi(1, attempt_limit)
+	play_all_attempts = play_every_attempt
 	_is_running = true
 	_emit_current_request()
 	return true
@@ -89,7 +94,8 @@ func _emit_current_request() -> void:
 	puzzle_requested.emit(
 		_configs[_current_config_index],
 		_puzzles[_current_puzzle_index],
-		max_attempts_per_puzzle
+		max_attempts_per_puzzle,
+		play_all_attempts
 	)
 
 
@@ -139,6 +145,10 @@ func _build_final_results() -> Dictionary:
 
 	return {
 		"max_attempts_per_puzzle": max_attempts_per_puzzle,
+		# Whether every puzzle played its full cap or stopped at its first solve.
+		# Without it a reader of this file cannot tell an unsolved puzzle's run of
+		# failures from a solved puzzle's attempts that were never played.
+		"play_all_attempts": play_all_attempts,
 		"puzzle_count": _puzzles.size(),
 		"config_count": _configs.size(),
 		"terminated_early": _terminated_early,

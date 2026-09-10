@@ -116,7 +116,7 @@ func _on_cell_clicked(pos: Vector2i) -> void:
 		type_label, pos.x, pos.y, _human_shop.gold
 	])
 
-	GameLogger.log_prep_placement(turn_number, "human", type_label, pos, _human_shop.gold)
+	GameLogger.log_human_prep_placement(turn_number, type_label, pos, _human_shop.gold)
 	prep_placement_made.emit(UnitData.Owner.HUMAN, _selected_unit_type, pos)
 
 	_check_prep_over()
@@ -124,7 +124,12 @@ func _on_cell_clicked(pos: Vector2i) -> void:
 
 # --- Prep Phase: LLM ---
 
-func apply_llm_prep_placement(type: UnitData.UnitType, pos: Vector2i) -> bool:
+func apply_llm_prep_placement(type: UnitData.UnitType, pos: Vector2i,
+		chooser: LogConstants.Chooser) -> bool:
+	## chooser says which agent picked this square. It is a required argument
+	## because only the caller knows: nothing reachable from here can tell the
+	## model's own answer from the random fallback's, and a placement logged
+	## without it is one no reader can attribute to either.
 	if phase != GamePhase.PREP or prep_turn != PrepTurn.LLM:
 		return false
 	if not _board.is_position_valid_for(UnitData.Owner.LLM, pos):
@@ -146,7 +151,7 @@ func apply_llm_prep_placement(type: UnitData.UnitType, pos: Vector2i) -> bool:
 		type_label, pos.x, pos.y, _llm_shop.gold
 	])
 
-	GameLogger.log_prep_placement(turn_number, "llm", type_label, pos, _llm_shop.gold)
+	GameLogger.log_llm_prep_placement(turn_number, type_label, pos, _llm_shop.gold, chooser)
 	prep_placement_made.emit(UnitData.Owner.LLM, type, pos)
 
 	_check_prep_over()
@@ -176,7 +181,7 @@ func apply_human_prep_placement(type: UnitData.UnitType, pos: Vector2i) -> bool:
 		type_label, pos.x, pos.y, _human_shop.gold
 	])
 
-	GameLogger.log_prep_placement(turn_number, "human", type_label, pos, _human_shop.gold)
+	GameLogger.log_human_prep_placement(turn_number, type_label, pos, _human_shop.gold)
 	prep_placement_made.emit(UnitData.Owner.HUMAN, type, pos)
 
 	_check_prep_over()

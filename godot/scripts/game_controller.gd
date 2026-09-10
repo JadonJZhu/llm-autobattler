@@ -97,10 +97,13 @@ func _start_game() -> void:
 			_active_puzzle_scenario.opponent_gold
 		)
 		_opponent_placements_queue = _puzzle_runner.get_opponent_queue_snapshot()
+		# The runner already named this attempt in the game log; it owns the
+		# attempt number and nothing here can restate it correctly.
 	else:
 		_llm_shop = Shop.create_randomized()
 		_human_shop = Shop.create_randomized()
 		_opponent_placements_queue.clear()
+		GameLogger.begin_free_play_game()
 
 	game_board.initialize()
 	board_ui.clear()
@@ -176,7 +179,9 @@ func _on_llm_prep_response_received(unit_type: UnitData.UnitType, grid_pos: Vect
 		_ablation_api_error_count = 0
 		_ablation_retry_pending = false
 
-	var success: bool = turn_manager.apply_llm_prep_placement(unit_type, grid_pos)
+	var success: bool = turn_manager.apply_llm_prep_placement(
+		unit_type, grid_pos, LogConstants.Chooser.MODEL
+	)
 	if not success:
 		push_warning("LLM placement failed for %s at %s. Falling back to random." % [
 			UnitData.TYPE_LABELS[unit_type], str(grid_pos)
@@ -261,7 +266,8 @@ func _apply_fallback_llm_prep() -> void:
 
 	var success: bool = turn_manager.apply_llm_prep_placement(
 		fallback["unit_type"],
-		fallback["position"]
+		fallback["position"],
+		LogConstants.Chooser.FALLBACK
 	)
 	if not success:
 		push_warning("Random LLM placement failed. Skipping turn.")
@@ -466,7 +472,8 @@ func _setup_puzzle_system() -> void:
 
 
 func start_ablation(max_attempts_per_puzzle: int = 10,
-		puzzle_path: String = DEFAULT_PUZZLE_PATH, configs: Array = []) -> void:
+		puzzle_path: String = DEFAULT_PUZZLE_PATH, configs: Array = [],
+		play_all_attempts: bool = false) -> void:
 	var puzzles: Array = _puzzle_loader.load_puzzles(puzzle_path)
 	if puzzles.is_empty():
 		shop_ui.update_status("No puzzles loaded. Check puzzle_suite.json.")
@@ -479,13 +486,16 @@ func start_ablation(max_attempts_per_puzzle: int = 10,
 	turn_manager.set_autoplay(true)
 	turn_manager.battle_step_delay_seconds = 0.0
 	shop_ui.disable_all_shop_buttons()
-	var started: bool = _ablation_runner.start(puzzles, max_attempts_per_puzzle, configs)
+	var started: bool = _ablation_runner.start(
+		puzzles, max_attempts_per_puzzle, configs, play_all_attempts
+	)
 	if not started:
 		_puzzle_mode_enabled = false
 
 
 func start_mini_ablation(max_attempts_per_puzzle: int = 3,
-		puzzle_path: String = DEFAULT_PUZZLE_PATH, configs: Array = []) -> void:
+		puzzle_path: String = DEFAULT_PUZZLE_PATH, configs: Array = [],
+		play_all_attempts: bool = false) -> void:
 	var puzzles: Array = _puzzle_loader.load_puzzles(puzzle_path)
 	if puzzles.is_empty():
 		shop_ui.update_status("No puzzles loaded. Check puzzle_suite.json.")
@@ -506,7 +516,9 @@ func start_mini_ablation(max_attempts_per_puzzle: int = 3,
 	turn_manager.set_autoplay(true)
 	turn_manager.battle_step_delay_seconds = 0.0
 	shop_ui.disable_all_shop_buttons()
-	var started: bool = _ablation_runner.start(subset, max_attempts_per_puzzle, mini_configs)
+	var started: bool = _ablation_runner.start(
+		subset, max_attempts_per_puzzle, mini_configs, play_all_attempts
+	)
 	if not started:
 		_puzzle_mode_enabled = false
 		_mini_ablation_active = false
@@ -526,13 +538,13 @@ func stop_ablation() -> void:
 
 
 func _on_ablation_puzzle_requested(config: LlmModeConfig, scenario,
-		max_attempts: int) -> void:
+		max_attempts: int, play_all_attempts: bool) -> void:
 	_mode_config = config
 	LlmClient.set_mode_config(config)
 	LlmClient.set_reflection_feedback("")
 	_games_since_reflection = 0
 	_active_puzzle_scenario = scenario
-	_puzzle_runner.start_puzzle(scenario, config, max_attempts)
+	_puzzle_runner.start_puzzle(scenario, config, max_attempts, play_all_attempts)
 
 
 func _on_puzzle_attempt_started(scenario_id: String, attempt_number: int, max_attempts: int) -> void:
@@ -600,6 +612,10 @@ func _on_ablation_completed(results: Dictionary) -> void:
 		filename_prefix = "mini_ablation" if is_mini_run else "ablation"
 	var run_label: String = "Mini ablation" if is_mini_run else "Ablation"
 	var log_path: String = _puzzle_logger.save_ablation_results(results, filename_prefix)
+	# The run is over, so no later battle will end and flush the game log. A run
+	# that stopped part way through an attempt has that attempt only in memory
+	# until this call, and in a windowed run the process outlives the run.
+	GameLogger.save_log()
 	if terminated_early:
 		shop_ui.update_status(
 			"%s terminated early: %s. Partial results saved to %s" % [
@@ -651,6 +667,7 @@ func _parse_cli_args() -> Dictionary:
 		"mini_ablation": false,
 		"config": "",
 		"max_attempts": 10,
+		"all_attempts": false,
 		"puzzle_path": DEFAULT_PUZZLE_PATH,
 		"output_prefix": "",
 	}
@@ -675,6 +692,8 @@ func _parse_cli_args() -> Dictionary:
 					else:
 						push_warning("Invalid --max-attempts value: %s (using default 10)." % attempt_text)
 					i += 1
+			"--all-attempts":
+				parsed["all_attempts"] = true
 			"--puzzle-path":
 				if i + 1 < args.size():
 					parsed["puzzle_path"] = String(args[i + 1]).strip_edges()
@@ -712,11 +731,12 @@ func _start_cli_ablation(cli_args: Dictionary) -> void:
 		filtered_configs.append(config)
 
 	var max_attempts: int = int(cli_args.get("max_attempts", 10))
+	var all_attempts: bool = bool(cli_args.get("all_attempts", false))
 	var puzzle_path: String = str(cli_args.get("puzzle_path", DEFAULT_PUZZLE_PATH))
 	if run_mini:
-		start_mini_ablation(max_attempts, puzzle_path, filtered_configs)
+		start_mini_ablation(max_attempts, puzzle_path, filtered_configs, all_attempts)
 	else:
-		start_ablation(max_attempts, puzzle_path, filtered_configs)
+		start_ablation(max_attempts, puzzle_path, filtered_configs, all_attempts)
 
 	if not _is_ablation_running():
 		push_error("CLI ablation failed to start.")
