@@ -1,8 +1,8 @@
 # LLM Autobattler
 
-A 4x3 autochess game built in Godot 4 where an LLM competes against a human player. Both players spend gold to buy and place units during a Prep phase, then watch units fight automatically in a Battle phase. The LLM receives a full game replay of the previous match to inform its next decisions.
+A 4x3 autochess game built in Godot 4 where an LLM competes against a human player. Both players spend gold to buy and place units during a Prep phase, then watch units fight automatically in a Battle phase. The LLM sees the replays of earlier games in the same session, up to the last 10, to inform its next decisions.
 
-The project also supports a **puzzle-based ablation mode** for evaluating LLM performance across different prompt configurations.
+The project also supports a **puzzle-based ablation mode** for evaluating LLM performance across different prompt configurations. Attempts at the same puzzle are independent trials: an attempt's placement prompts carry no replay of any earlier attempt, so wins out of N are N separate draws. A puzzle stops at its first solve unless it is told to play every attempt, so N is how many attempts were actually played rather than a number fixed in advance. Reflection is the deliberate exception and does read across attempts. See `TECHNICAL.md` for the detail and for the flag that restores the older behaviour.
 
 ## Prerequisites
 

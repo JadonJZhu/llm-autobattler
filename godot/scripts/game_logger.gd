@@ -263,10 +263,12 @@ func get_game_history(count: int = -1) -> Array[Dictionary]:
 
 
 func get_placement_history() -> Array[Dictionary]:
-	## The replays a placement prompt may be built from, which is deliberately a
-	## narrower window than the one the reflection channel reads. Under
-	## independent attempts an attempt's first placement sees nothing at all,
-	## because the attempt it follows is outside the window.
+	## The replays a placement prompt may be built from. What bounds this window
+	## is the attempt boundary rather than a count: outside a puzzle nothing
+	## closes it, so it is the whole retained history and is wider than the
+	## look-back the reflection channel reads. Under independent attempts it
+	## closes at every attempt start, so an attempt's first placement sees
+	## nothing at all, because the attempt it follows is outside the window.
 	return get_game_history(_placement_lookback_games)
 
 
