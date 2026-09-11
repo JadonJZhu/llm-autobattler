@@ -17,6 +17,12 @@ const ANTHROPIC_VERSION: String = "2023-06-01"
 const REQUEST_TIMEOUT_SECONDS: float = 120.0
 const MAX_TOKENS: int = 4096
 
+## What this client is, as a run's log records its producer, when no API key was
+## found. Nothing is sent to any model in that case and every LLM placement comes
+## from LlmFallback.pick_random_placement, so naming the model the request would
+## have carried would read as a model that answered.
+const NO_MODEL: String = "none (no API key: every LLM placement was random)"
+
 var api_model: String = DEFAULT_API_MODEL
 var _api_endpoint: String = DEFAULT_API_ENDPOINT
 var _api_format: String = DEFAULT_API_FORMAT
@@ -36,6 +42,17 @@ func _ready() -> void:
 
 func has_api_key() -> bool:
 	return not _api_key.is_empty()
+
+
+func model_identity() -> String:
+	## What produced the answers this client returns, for the record a run keeps
+	## of itself: the model this client sends to, or NO_MODEL where there is no
+	## key and so no model. The two facts live here and nowhere else, which is
+	## why the choice between them is made here rather than by the caller that
+	## writes it down.
+	if not has_api_key():
+		return NO_MODEL
+	return _get_api_model()
 
 
 func _load_config() -> void:

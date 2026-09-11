@@ -16,6 +16,11 @@ const _SCORE_FIELDS: Array[String] = [
 	"human_escaped",
 ]
 
+## The producer stamped on entries logged by a run that never named one. It reads
+## as neither a model nor "no model was used", because a run that did not say
+## which it was gives no ground to claim either.
+const MODEL_UNRECORDED: String = "unrecorded (the run never named its model)"
+
 ## Stamped on every entry logged outside a puzzle attempt. It names the mode
 ## rather than leaving the identity fields off, so a free-play entry can never be
 ## mistaken for a puzzle placement whose identity went missing.
@@ -23,6 +28,7 @@ const _FREE_PLAY_IDENTITY: Dictionary = {"play_mode": "free_play"}
 
 var _log_entries: Array[Dictionary] = []
 var _session_id: String = ""
+var _model: String = MODEL_UNRECORDED
 var _attempt_identity: Dictionary = _FREE_PLAY_IDENTITY.duplicate()
 
 var _current_battle_start_board: String = ""
@@ -42,6 +48,7 @@ func _ready() -> void:
 func log_turn(turn_number: int, turn_data: Dictionary) -> void:
 	var entry: Dictionary = {
 		"session_id": _session_id,
+		"model": _model,
 		"turn_number": turn_number,
 		"timestamp": Time.get_datetime_string_from_system(),
 	}
@@ -50,6 +57,21 @@ func log_turn(turn_number: int, turn_data: Dictionary) -> void:
 	entry.merge(_attempt_identity)
 	entry.merge(turn_data)
 	_log_entries.append(entry)
+
+
+func record_model(model_identity: String) -> void:
+	## Names what produced this run's answers, on every entry that follows.
+	##
+	## Nothing else in the file says it. Runs were matched to the results file
+	## written beside them by the two carrying the same modification time, which
+	## is not a join a grid of several models can be read by and not one anything
+	## reproduces. It is stamped per entry rather than once at the head of the
+	## file for the reason the attempt identity is: every reader of this file
+	## reads entries, and an entry that has to be joined to a record elsewhere in
+	## the file to say what made it is that same positional join again. A run
+	## played with no key carries LlmHttpBase.NO_MODEL, which says so outright;
+	## nothing here invents a name for a run that gave none.
+	_model = model_identity
 
 
 func begin_puzzle_attempt(puzzle_id: String, config_label: String,

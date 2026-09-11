@@ -50,26 +50,31 @@ func test_parse_case_insensitive_type():
 func test_parse_empty_string_returns_empty():
 	var result := parser.parse_place_command("")
 	assert_eq(result, {}, "Empty string should return empty dict")
+	assert_push_error("No PLACE: command found in response.")
 
 
 func test_parse_no_place_keyword_returns_empty():
 	var result := parser.parse_place_command("I want to put A at row 0 col 1")
 	assert_eq(result, {})
+	assert_push_error("No PLACE: command found in response.")
 
 
 func test_parse_malformed_coords_returns_empty():
 	var result := parser.parse_place_command("PLACE: A (abc, def)")
 	assert_eq(result, {})
+	assert_push_error("Non-integer coordinates: 'abc', 'def'")
 
 
 func test_parse_missing_parens_returns_empty():
 	var result := parser.parse_place_command("PLACE: A 0, 1")
 	assert_eq(result, {})
+	assert_push_error("Invalid unit type in PLACE command: 'A0,1'")
 
 
 func test_parse_unknown_type_returns_empty():
 	var result := parser.parse_place_command("PLACE: Z (0, 0)")
 	assert_eq(result, {})
+	assert_push_error("Invalid unit type in PLACE command: 'Z'")
 
 
 # =============================================================================
@@ -79,16 +84,19 @@ func test_parse_unknown_type_returns_empty():
 func test_parse_row_out_of_valid_rows():
 	var result := parser.parse_place_command("PLACE: A (2, 0)")
 	assert_eq(result, {}, "Row 2 is not in default valid_rows [0, 1]")
+	assert_push_error("Row 2 is not in valid rows [0, 1].")
 
 
 func test_parse_col_out_of_bounds():
 	var result := parser.parse_place_command("PLACE: A (0, 3)")
 	assert_eq(result, {}, "Col 3 is out of bounds (COLS=3, max col=2)")
+	assert_push_error("Column 3 is out of range (must be 0-2).")
 
 
 func test_parse_negative_coords():
 	var result := parser.parse_place_command("PLACE: A (-1, 0)")
 	assert_eq(result, {}, "Negative coords should fail")
+	assert_push_error("Row -1 is not in valid rows [0, 1].")
 
 
 # =============================================================================
@@ -103,3 +111,4 @@ func test_parse_with_opponent_valid_rows():
 
 	var fail := parser.parse_place_command("PLACE: A (0, 1)")
 	assert_eq(fail, {}, "Row 0 should fail with opponent valid_rows [2, 3]")
+	assert_push_error("Row 0 is not in valid rows [2, 3].")

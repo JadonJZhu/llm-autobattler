@@ -57,6 +57,11 @@ func _ready() -> void:
 	_connect_signals()
 	_setup_instructions_menu()
 	LlmClient.set_mode_config(_mode_config)
+	# Every run this project makes starts here, so this is where the log is told
+	# what is playing it. The logger cannot ask at its own start: both are
+	# autoloads and it comes up first, before the client has read the key or the
+	# model name out of the environment.
+	GameLogger.record_model(LlmClient.model_identity())
 
 	var cli_args: Dictionary = _parse_cli_args()
 	if bool(cli_args.get("ablation", false)) or bool(cli_args.get("mini_ablation", false)):

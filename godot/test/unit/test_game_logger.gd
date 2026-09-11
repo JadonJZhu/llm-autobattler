@@ -1,8 +1,12 @@
 extends GutTest
-## Covers the three properties the game log has to hold for a logged attempt to
-## be readable on its own: the score fields a battle ended with reach the
-## game_over entry, every entry names the attempt it belongs to, and every LLM
-## prep placement names which agent picked the square.
+## Covers what a logged attempt has to state for a reader to make sense of it on
+## its own: the score fields a battle ended with reach the game_over entry, every
+## entry names the attempt it belongs to, an attempt's prep count is checkable
+## against what that attempt states, every LLM prep placement names which agent
+## picked the square, and every entry names what produced the run.
+##
+## What a run has to do to put that last one in the log is not here. It happens
+## once, at the scene start, and test_game_controller.gd drives that.
 ##
 ## Expected field names are spelled out here rather than read from GameLogger, so
 ## these count against what a log entry has to state and not against whatever the
@@ -250,3 +254,95 @@ func test_a_reader_can_split_an_attempts_llm_placements_by_chooser():
 		"every LLM prep entry has to state a chooser or the split is unknowable")
 	assert_eq(by_chooser.get("model", 0), 2)
 	assert_eq(by_chooser.get("fallback", 0), 1)
+
+
+# =============================================================================
+# E. Every entry names what produced the run
+# =============================================================================
+
+func _identity_of_a_client_configured_with(api_key: String, model: String) -> String:
+	## What a client says produced its answers under that environment. Both
+	## values are read once, when the node enters the tree, so they are set
+	## before that and put back afterwards.
+	var had_key: bool = OS.has_environment("LLM_API_KEY")
+	var had_model: bool = OS.has_environment("LLM_API_MODEL")
+	var previous_key: String = OS.get_environment("LLM_API_KEY")
+	var previous_model: String = OS.get_environment("LLM_API_MODEL")
+
+	OS.set_environment("LLM_API_KEY", api_key)
+	OS.set_environment("LLM_API_MODEL", model)
+	var identity: String = add_child_autofree(LlmHttpBase.new()).model_identity()
+
+	if had_key:
+		OS.set_environment("LLM_API_KEY", previous_key)
+	else:
+		OS.unset_environment("LLM_API_KEY")
+	if had_model:
+		OS.set_environment("LLM_API_MODEL", previous_model)
+	else:
+		OS.unset_environment("LLM_API_MODEL")
+	return identity
+
+
+func test_a_client_holding_a_key_names_the_model_it_sends_to():
+	assert_eq(
+		_identity_of_a_client_configured_with("test-key", "some-model-2026"),
+		"some-model-2026",
+		"a run made through this client was produced by the model it sends to"
+	)
+
+
+func test_a_client_holding_no_key_names_no_model_rather_than_the_default():
+	## Without a key nothing is sent anywhere and every LLM placement comes from
+	## the random fallback, so the model the client would otherwise have used is
+	## the one thing its run must not be recorded under.
+	var identity: String = _identity_of_a_client_configured_with("", "some-model-2026")
+	assert_eq(identity, LlmHttpBase.NO_MODEL)
+	assert_ne(identity, "some-model-2026",
+		"a keyless run reached no model and must not be recorded under one")
+	assert_ne(identity, LlmHttpBase.DEFAULT_API_MODEL,
+		"a keyless run reached no model and must not be recorded under one")
+
+
+func test_every_entry_of_a_run_names_the_model_it_recorded():
+	## Per entry rather than once per file: a reader of a single entry has to be
+	## able to say what made it without joining it to anything else.
+	var mark: int = _mark()
+	GameLogger.record_model("some-model-2026")
+	GameLogger.begin_puzzle_attempt("4", "I1_E1_R1", 1, false)
+	GameLogger.log_llm_prep_placement(1, "A", Vector2i(0, 0), 2, LogConstants.Chooser.MODEL)
+	GameLogger.log_human_prep_placement(2, "A", Vector2i(2, 0), 2)
+	GameLogger.log_battle_step(1, "LLM", "unit moved")
+	_end_a_game(SAMPLE_SCORE, "LLM", 2, 1)
+	GameLogger.begin_free_play_game()
+
+	var entries: Array = _entries_since(mark)
+	assert_eq(entries.size(), 6, "every entry the run logged is under test")
+	for entry in entries:
+		assert_eq(entry.get("model", ABSENT), "some-model-2026",
+			"an entry that does not name the model cannot be attributed to one")
+
+
+func test_a_keyless_run_records_that_no_model_was_used():
+	## The state a log must never leave open: a run nothing produced has to say
+	## so, because a missing field reads as a model whose name went astray.
+	GameLogger.record_model(
+		_identity_of_a_client_configured_with("", "some-model-2026")
+	)
+	GameLogger.log_llm_prep_placement(1, "A", Vector2i(0, 0), 2, LogConstants.Chooser.FALLBACK)
+	var entry: Dictionary = _last_entry()
+	assert_true(entry.has("model"), "an absent model field would read as some model")
+	assert_eq(entry.get("model", ABSENT), LlmHttpBase.NO_MODEL)
+
+
+func test_a_run_that_named_no_model_claims_neither_a_model_nor_the_absence_of_one():
+	## Nothing in the project starts a run without naming its producer, so this
+	## is the state of entries logged by something that never did. It is a third
+	## answer on purpose: reading it as either of the other two would be a claim
+	## about a run that made none.
+	GameLogger.record_model(GameLogger.MODEL_UNRECORDED)
+	GameLogger.log_battle_step(1, "LLM", "unit moved")
+	var stated: String = str(_last_entry().get("model", ABSENT))
+	assert_eq(stated, GameLogger.MODEL_UNRECORDED)
+	assert_ne(stated, LlmHttpBase.NO_MODEL,
+		"a run that said nothing is not a run that said no model was used")
