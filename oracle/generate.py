@@ -41,6 +41,8 @@ This module measures that. In order:
    nothing about an agent. The file it writes ranks puzzles from the easiest,
    which is the opposite direction to the win fraction, and carries the bin
    each one filled beside it: see ``accepted_in_order`` and ``puzzle_json``.
+   It also stamps the arguments this run resolved, so the file says what would
+   produce it again: see ``study_provenance``.
 
 DIFFICULTY here is ``analysis``'s: the fraction of complete legal plays that
 win, a win being ``llm_score > human_score``. ``self-check`` runs this module's
@@ -51,7 +53,9 @@ fixtures of its own every guard against a puzzle being measured, or read back
 later, as something its file does not describe: one per way a listed placement
 can fail to reach the board, one per way a whole puzzle can fail to reach a
 measurement, and one per way a written landscape can stop describing what a
-reader of it would compute.
+reader of it would compute. It writes a suite of its own besides, and requires
+the stamp on it to name every argument the study resolved, in a form the parser
+reads back as itself.
 
 EVERY SECONDS FIGURE IS WALL CLOCK on whatever machine and load the run met.
 ``study`` re-enumerates one puzzle several times and prints how far apart those
@@ -401,6 +405,86 @@ def build_suite(rng, edges, quotas, cap, on_candidate=None):
 # --- The suite file ---
 
 
+# The study options that describe the run, as against the three that say where
+# it wrote its output and how loud it was on stderr. A suite file records these
+# because re-running them is what reproduces it; ``--suite-out``,
+# ``--record-out`` and ``--verbose`` change nothing about which puzzles a run
+# produces. ``_stamp_complaints`` holds this split against the parser's own
+# options, so a study option added later cannot go unrecorded unnoticed.
+STUDY_PARAMETERS = (
+    "seed",
+    "sample",
+    "band",
+    "targets",
+    "suite_size",
+    "suite_bins",
+    "suite_edges",
+    "suite_cap",
+)
+STUDY_OUTPUTS = ("suite_out", "record_out", "verbose")
+
+
+def study_parameters(args):
+    """The study's arguments, resolved, in the shape a suite file records them.
+
+    Resolved rather than as typed, because an argument the run left to a default
+    reproduces a different file the day that default moves, and what the run
+    actually used is the recorded value. Seven of the eight defaults are
+    argparse's and arrive here already applied; the bin count's is a layer below
+    it, in ``suite_bin_count``, so a run that named neither the count nor the
+    edges is recorded with the count that run binned the prior at. The literal
+    command line is kept beside this by ``study_provenance``, since the resolved
+    set cannot recover it.
+    """
+    resolved = {}
+    for name in STUDY_PARAMETERS:
+        value = getattr(args, name)
+        resolved[name] = list(value) if isinstance(value, (list, tuple)) else value
+    if resolved["suite_edges"] is None:
+        resolved["suite_bins"] = suite_bin_count(args)
+    return resolved
+
+
+def study_command(parameters):
+    """Recorded parameters as the study arguments that would produce them again.
+
+    The tokens follow the script path, so a recorded run is re-run as
+    ``python3 -B oracle/generate.py`` plus these plus a ``--suite-out`` naming
+    where the file should land this time. A parameter recorded as None was not
+    named and is not named back: ``--suite-bins`` and ``--suite-edges`` exclude
+    each other at the command line, so passing both refuses.
+    """
+    tokens = ["study"]
+    for name in STUDY_PARAMETERS:
+        value = parameters[name]
+        if value is None:
+            continue
+        tokens.append("--" + name.replace("_", "-"))
+        if isinstance(value, list):
+            tokens.append(",".join(repr(float(part)) for part in value))
+        else:
+            tokens.append(repr(value))
+    return tokens
+
+
+def study_provenance(args):
+    """What produced a suite file: the arguments it resolved, and the line run.
+
+    ``parameters`` is what regenerates the file. ``command`` is the argument
+    list this process was given, which holds the output path and any tracing
+    that the resolved set does not; it starts at the script path rather than at
+    the interpreter, so it is re-run the way ``study_command`` says, behind a
+    ``python3 -B``.
+
+    Neither carries a clock reading, so a file regenerated from its own stamp
+    differs from the one it came from only where the run genuinely differed:
+    replay to a new path and the recorded ``--suite-out`` is the one thing that
+    moves, and the puzzles are identical. A timestamp would make every
+    regeneration differ and buy nothing this needs.
+    """
+    return {"command": list(sys.argv), "parameters": study_parameters(args)}
+
+
 def puzzle_json(candidate, rank, tier):
     """One puzzle in puzzle_suite.json's shape, plus what it measured.
 
@@ -464,19 +548,33 @@ def accepted_in_order(run):
             yield rank, bins - index, candidate
 
 
-def suite_json(run):
-    """The accepted puzzles as a loadable suite, plus the bins behind it."""
+def suite_puzzles(run):
+    """The accepted puzzles, ranked, in the shape a suite file lists them."""
+    return [
+        puzzle_json(candidate, rank, tier)
+        for rank, tier, candidate in accepted_in_order(run)
+    ]
+
+
+def suite_json(run, provenance):
+    """The accepted puzzles as a loadable suite, the bins behind them, and what
+    would produce the file again.
+
+    ``provenance`` is a top-level key beside ``bin_edges``, and every reader of
+    a suite file passes over both: ``prep.load_suite`` and ``puzzle_loader.gd``
+    read ``puzzles`` and nothing else out of the root, and
+    ``analysis.recorded_counts`` reads the counts inside each puzzle.
+    """
     return {
         "bin_edges": list(run.edges),
-        "puzzles": [
-            puzzle_json(candidate, rank, tier)
-            for rank, tier, candidate in accepted_in_order(run)
-        ],
+        "provenance": provenance,
+        "puzzles": suite_puzzles(run),
     }
 
 
-def write_suite(run, path):
-    """Write the suite and read it back through the loader the game uses.
+def write_suite(run, path, provenance):
+    """Write the suite, stamped with what produced it, and read it back through
+    the loader the game uses.
 
     ``prep.load_suite`` is the port of ``puzzle_loader.gd``, so a file it reads
     back as the puzzles it was written from is a file the game's loader accepts.
@@ -487,7 +585,7 @@ def write_suite(run, path):
     refuses here rather than in whatever stage reads the file next.
     """
     with open(path, "w") as handle:
-        json.dump(suite_json(run), handle, indent=2)
+        json.dump(suite_json(run, provenance), handle, indent=2)
 
     expected = tuple(
         replace(candidate.puzzle, difficulty=rank)
@@ -905,9 +1003,19 @@ def _record(prior, run, timing, args):
             "attempts": run.attempts,
             "degenerate": run.degenerate,
             "seconds": run.seconds,
-            "puzzles": suite_json(run)["puzzles"],
+            "puzzles": suite_puzzles(run),
         },
     }
+
+
+def suite_bin_count(args):
+    """The bins a run fills when it was not handed the edges outright.
+
+    argparse leaves ``--suite-bins`` at None, so the count a run used is settled
+    here rather than at the command line, and this is the value a suite file
+    records for it.
+    """
+    return args.suite_bins or DEFAULT_SUITE_BINS
 
 
 def suite_edges(args, difficulties):
@@ -920,9 +1028,7 @@ def suite_edges(args, difficulties):
     """
     if args.suite_edges is not None:
         return args.suite_edges
-    return bin_edges(
-        difficulties[0], difficulties[-1], args.suite_bins or DEFAULT_SUITE_BINS
-    )
+    return bin_edges(difficulties[0], difficulties[-1], suite_bin_count(args))
 
 
 def _study(args):
@@ -984,7 +1090,7 @@ def _study(args):
             % args.suite_out
         )
     elif args.suite_out:
-        written = write_suite(run, args.suite_out)
+        written = write_suite(run, args.suite_out, study_provenance(args))
         print(
             "  wrote %d puzzles to %s, reloaded through prep.load_suite"
             % (written, args.suite_out)
@@ -1220,9 +1326,137 @@ def _stale_artifact_fixtures():
             yield description, artifact_path
 
 
+def _stamp_complaints():
+    """A suite this module writes, and what its stamp fails to say, if anything.
+
+    The stamp exists because ``lowtail_suite.json`` was written without one: on
+    2026-09-10 its seed had to be recovered by replaying candidate streams until
+    one reproduced all five of its puzzles, and two of the arguments behind it
+    were never recovered. So what is checked here is not that a key is present
+    but that what is in it is enough to run the study again.
+
+    Four things make it enough. Every option the study takes is either recorded
+    or one of the three that only say where output went, which is what stops an
+    option added later from going unrecorded. The stamp holds what this run
+    resolved, defaults included, rather than what the caller happened to type.
+    The recorded parameters go back through the parser as themselves, so they
+    are a command and not just a description of one. And a run that named
+    neither the bin count nor the edges still bins the prior the same way when
+    it is replayed with ``DEFAULT_SUITE_BINS`` moved, which is the one default
+    argparse does not apply and so the one a stamp can silently miss.
+
+    The suite is written from one fixture puzzle rather than a sampled run: what
+    is under test is what the file says about its own making, which is the same
+    whether the puzzles in it took one enumeration or ten thousand.
+
+    Yields ``(what was checked, what is wrong or None)``.
+    """
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            # Every option away from its default, so that dropping one from
+            # the reconstructed command line shows up as a difference rather
+            # than being handed back by the default it happened to match.
+            # ``--suite-bins`` is the exception and has to be: it excludes
+            # ``--suite-edges``, which is the rule this suite was built under.
+            "study",
+            "--seed", "11",
+            "--sample", "3",
+            "--band", "0.04",
+            "--targets", "0.2,0.8",
+            "--suite-edges", "0.1,0.6,0.9",
+            "--suite-size", "2",
+            "--suite-cap", "9",
+        ]
+    )
+
+    unrecorded = sorted(
+        set(vars(args))
+        - {"command", "handler"}
+        - set(STUDY_PARAMETERS)
+        - set(STUDY_OUTPUTS)
+    )
+    yield (
+        "every study option is recorded or is an output destination",
+        None
+        if not unrecorded
+        else "study also takes %s, which a suite file neither records nor knows "
+        "to leave out" % ", ".join(unrecorded),
+    )
+
+    candidate = evaluate(
+        prep.Puzzle(
+            id="stamped",
+            difficulty=1,
+            llm_shop=(engine.A,),
+            llm_gold=1,
+            opponent_shop=(engine.A,),
+            opponent_gold=2,
+            opponent_placements=(
+                prep.Placement(engine.A, (2, 0)),
+                prep.Placement(engine.A, (2, 1)),
+            ),
+        )
+    )
+    run = SuiteRun([0.1, 0.6, 0.9], [1, 1], [[candidate], []], [1, None], 1, 0, 0.0)
+
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "stamped_suite.json"
+        write_suite(run, path, study_provenance(args))
+        stamped = json.loads(path.read_text())["provenance"]
+
+    resolved = study_parameters(args)
+    yield (
+        "the stamp records the arguments the run resolved",
+        None
+        if stamped["parameters"] == resolved
+        else "the run resolved %s and the file says %s"
+        % (resolved, stamped["parameters"]),
+    )
+    yield (
+        "the stamp records the command line that ran",
+        None
+        if stamped["command"] == sys.argv
+        else "the line run was %s and the file says %s" % (sys.argv, stamped["command"]),
+    )
+
+    again = study_parameters(parser.parse_args(study_command(stamped["parameters"])))
+    yield (
+        "the recorded arguments read back through the parser as themselves",
+        None
+        if again == stamped["parameters"]
+        else "%s reads back as %s" % (stamped["parameters"], again),
+    )
+
+    # The fixture above names --suite-edges, which excludes --suite-bins, so it
+    # can never exercise a resolved bin count. This one names neither, and the
+    # default is moved under the replay: a stamp that recorded the count binds
+    # the same edges either way, and a stamp that recorded None follows the
+    # moved default into a different suite.
+    global DEFAULT_SUITE_BINS
+    defaulted = parser.parse_args(["study"])
+    difficulties = [0.02, 0.31, 0.88]
+    binned = suite_edges(defaulted, difficulties)
+    replayed = parser.parse_args(study_command(study_parameters(defaulted)))
+    held = DEFAULT_SUITE_BINS
+    DEFAULT_SUITE_BINS = held + 2
+    try:
+        rebinned = suite_edges(replayed, difficulties)
+    finally:
+        DEFAULT_SUITE_BINS = held
+    yield (
+        "a run that named no bins records the bin count it resolved",
+        None
+        if rebinned == binned
+        else "the run binned the prior at %s and its recorded arguments bin it at "
+        "%s once the default moves" % (binned, rebinned),
+    )
+
+
 def _self_check(args):
-    """Hold ``evaluate`` to ``analysis.analyze_puzzle`` on the shipped suite, and
-    fire the loss and staleness guards on fixtures of this module's own.
+    """Hold ``evaluate`` to ``analysis.analyze_puzzle`` on the shipped suite,
+    fire the loss and staleness guards on fixtures of this module's own, and
+    require a suite this module writes to say what would produce it again.
 
     The shipped suite is the fixture the oracle is checked against, so the two
     things that must be true of it are that the two enumerations agree about its
@@ -1237,6 +1471,10 @@ def _self_check(args):
     The staleness fixtures are the same idea one stage later: a landscape is
     written, the suite or the oracle behind it moves, and
     ``analysis.load_analysis`` must refuse to hand the numbers back.
+
+    The stamp fixture is a fourth thing rather than a guard: it writes a suite
+    and reads back what the file says produced it. ``_stamp_complaints`` holds
+    the reason.
 
     Any suite may be passed, and a legal one passes whatever its opponents
     queue, including nothing at all.
@@ -1297,10 +1535,17 @@ def _self_check(args):
         else:
             print("GUARD DID NOT FIRE on %s, %s" % (description, path))
             failed = True
+
+    for description, complaint in _stamp_complaints():
+        if complaint is None:
+            print("a written suite holds: %s" % description)
+        else:
+            print("A WRITTEN SUITE DOES NOT HOLD %s: %s" % (description, complaint))
+            failed = True
     return 1 if failed else 0
 
 
-def main():
+def build_parser():
     parser = argparse.ArgumentParser(
         description="Measure what a puzzle at a target difficulty costs to generate."
     )
@@ -1354,13 +1599,18 @@ def main():
     check = sub.add_parser(
         "self-check",
         help="require this module's difficulty to match analysis's, require every "
-        "puzzle to field what its file lists, and fire the queue, loading and "
-        "artifact-staleness guards on fixtures",
+        "puzzle to field what its file lists, fire the queue, loading and "
+        "artifact-staleness guards on fixtures, and require a suite this module "
+        "writes to name the arguments that produced it",
     )
     check.add_argument("--puzzles", default=prep.DEFAULT_PUZZLE_PATH)
     check.set_defaults(handler=_self_check)
 
-    args = parser.parse_args()
+    return parser
+
+
+def main():
+    args = build_parser().parse_args()
     return args.handler(args)
 
 
