@@ -16,6 +16,13 @@ func save_ablation_results(results: Dictionary, filename_prefix: String = "ablat
 
 	var payload: Dictionary = {
 		"timestamp": Time.get_datetime_string_from_system(),
+		# What the run cost, beside what it bought. This is the file a result is
+		# read from, and the alternative home for the total is the game log,
+		# where reading it means replaying every entry of every attempt of every
+		# config to add four numbers up. It is read from the logger that counted
+		# the calls rather than handed in by the caller, so no run can write a
+		# results file that leaves out what it spent.
+		"usage": GameLogger.usage_total(),
 		"results": results,
 	}
 	file.store_string(JSON.stringify(payload, "\t"))

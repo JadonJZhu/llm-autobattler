@@ -21,6 +21,11 @@ const _SCORE_FIELDS: Array[String] = [
 ## which it was gives no ground to claim either.
 const MODEL_UNRECORDED: String = "unrecorded (the run never named its model)"
 
+## What one call's entry states in place of a usage block when the response
+## carried none. A zero would read as a call that consumed nothing, which is a
+## different claim from the response never having said what it consumed.
+const USAGE_UNSTATED: String = "unstated (the response carried no usage block)"
+
 ## Stamped on every entry logged outside a puzzle attempt. It names the mode
 ## rather than leaving the identity fields off, so a free-play entry can never be
 ## mistaken for a puzzle placement whose identity went missing.
@@ -30,6 +35,27 @@ var _log_entries: Array[Dictionary] = []
 var _session_id: String = ""
 var _model: String = MODEL_UNRECORDED
 var _attempt_identity: Dictionary = _FREE_PLAY_IDENTITY.duplicate()
+
+## How many API calls this run recorded, and how many of those came back
+## without stating what they consumed. The second is what keeps the totals
+## honest: a call missing from the counts below is a bill this run cannot see,
+## so a total carrying any of them is a floor rather than the whole cost.
+var _api_calls: int = 0
+var _api_calls_without_usage: int = 0
+
+## What this run has consumed, in the four counts a token price is charged
+## against: input at the full rate, input served from a cache at a fraction of
+## that rate, input written to a cache at a premium over it, and output. The
+## cached count is kept apart from the input count rather than folded into it,
+## because whether caching engages at all is the open question these numbers
+## have to be able to answer. Both request formats are read into these names, so
+## a total does not depend on which provider produced it.
+var _usage_tokens: Dictionary = {
+	"uncached_input": 0,
+	"cached_input": 0,
+	"cache_write_input": 0,
+	"output": 0,
+}
 
 var _current_battle_start_board: String = ""
 var _current_battle_steps: Array[String] = []
@@ -77,6 +103,62 @@ func record_model(model_identity: String) -> void:
 	## played with no key carries LlmHttpBase.NO_MODEL, which says so outright;
 	## nothing here invents a name for a run that gave none.
 	_model = model_identity
+
+
+func log_api_call(client_name: String, api_format: String, usage: Dictionary,
+		tokens: Dictionary) -> void:
+	## Records one call to the model and what it consumed.
+	##
+	## Usage is per call, and every other entry in this file is per placement,
+	## per battle step or per game, so a call gets an entry of its own. Hanging
+	## the count off the placement it produced would drop the calls that produce
+	## no placement, and those are not a rounding error: every reflection call is
+	## one, and so is every call whose answer could not be applied, and the
+	## reflection prompt is the largest thing this project sends.
+	##
+	## The provider's own usage object is carried through unchanged, so a total
+	## can be checked against what actually came back rather than believed.
+	## `tokens` is that same object read into the four counts a price is charged
+	## against, which is what the run total sums, and which is what makes a total
+	## mean one thing across both request formats.
+	##
+	## Both are empty exactly when the response stated no usage. That call still
+	## happened and still cost something, so it is counted and marked rather than
+	## dropped or added in as zero: a total that quietly swallowed it would read
+	## as a complete bill.
+	_api_calls += 1
+	var fields: Dictionary = {
+		"event": "api_call",
+		"client": client_name,
+		"api_format": api_format,
+	}
+	if usage.is_empty():
+		_api_calls_without_usage += 1
+		fields["usage"] = USAGE_UNSTATED
+	else:
+		fields["usage"] = usage.duplicate(true)
+		fields["tokens"] = tokens.duplicate()
+		for count_name in _usage_tokens:
+			_usage_tokens[count_name] = int(_usage_tokens[count_name]) + int(
+				tokens.get(count_name, 0)
+			)
+	log_turn(0, fields)
+
+
+func usage_total() -> Dictionary:
+	## What this run has consumed so far, as whatever is pricing it reads it.
+	##
+	## It names the model because a price is per model: a token count that does
+	## not say what produced it cannot be multiplied by anything. A run that held
+	## no API key sent nothing, so it reads as its own model identity with zero
+	## calls and four zero counts, and that is not the same artifact as one
+	## carrying no total at all, which says nothing about what it spent.
+	return {
+		"model": _model,
+		"calls": _api_calls,
+		"calls_without_usage": _api_calls_without_usage,
+		"tokens": _usage_tokens.duplicate(),
+	}
 
 
 func begin_puzzle_attempt(puzzle_id: String, config_label: String,

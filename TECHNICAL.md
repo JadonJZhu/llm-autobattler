@@ -38,8 +38,8 @@ godot/
     llm_mode_config.gd     — Pure data class for LLM mode toggles (instructions, examples, reflection)
     reflection_client.gd   — Requests strategic reflection feedback from the LLM API
     game_logger.gd         — Autoload singleton. JSON logs to user://game_logs/; replay history, the
-                             placement look-back window, and the model and attempt identity stamped
-                             on every entry
+                             placement look-back window, the model and attempt identity stamped
+                             on every entry, and the per-call token usage and its run total
     puzzle_scenario.gd     — Data model for a scripted puzzle definition
     puzzle_loader.gd       — Loads puzzle scenarios from JSON
     puzzle_runner.gd       — Runs one puzzle across multiple attempts for a mode config
@@ -104,6 +104,18 @@ godot/
   earlier attempt, and none from inside its own attempt, because an attempt is a single game.
   Reflection is not bounded by the attempt boundary, which is what lets attempts be independent of each
   other's replays while reflection still has something to reflect on
+- Every response that comes back is logged as its own `api_call` game-log entry, carrying the client
+  that made it, the request format, the provider's usage block unchanged, and that block read into the
+  four counts a price is charged against: `uncached_input`, `cached_input`, `cache_write_input` and
+  `output`. The two formats divide the cached part differently, and `LlmHttpBase._token_counts` is the
+  only place that difference is resolved: `anthropic` states `input_tokens` alongside
+  `cache_read_input_tokens` and `cache_creation_input_tokens`, so nothing is subtracted, while `openai`
+  states one `prompt_tokens` that already contains both `prompt_tokens_details.cached_tokens` and
+  `prompt_tokens_details.cache_write_tokens`, so both come out of it. A response carrying no usage block
+  is recorded as `GameLogger.USAGE_UNSTATED` and counted in `calls_without_usage`, never as zero
+- Nothing here sends a `cache_control` breakpoint, and Anthropic caches only where one is sent, so on any
+  `anthropic` arm `cached_input` and `cache_write_input` are zero because nothing asked for caching, not
+  because caching was tried and missed. A price for that arm gets no cache discount
 - Response format expected: `PLACE: <type> (row, col)` as the last non-empty line
 - Parsed by `LlmResponseParser`; on failure, `LlmFallback` picks a random valid placement
 - No extended thinking / chain-of-thought extraction currently implemented
@@ -130,7 +142,16 @@ godot/
   `scripts/run_ablation.py` nor `scripts/run_official_experiment.py` forwards it, or `--all-attempts`.
 - Which regime a run used is stamped on every game-log entry as `carry_attempt_history`, and written into
   the ablation results file under the same key, so a pass rate says what it means without a join.
-- Results are written by `PuzzleLogger` to `user://game_logs/ablation_<timestamp>.json`.
+- Results are written by `PuzzleLogger` to `user://game_logs/ablation_<timestamp>.json`, with the run's
+  token total under `usage` beside them, so a costing reads what the run spent without replaying the
+  game log. It names the model, because a price is per model. A keyless run states that model identity
+  with zero calls and four zero counts, which is what separates the random arm from a model arm.
+- A parallel run's workers are separate processes counting separately, so `scripts/run_ablation.py` sums
+  their `usage` blocks into the merged file under the same key, with `models` a list because a resume that
+  changed `LLM_API_MODEL` merges workers that ran against different models, and `workers_without_usage`
+  counting worker files that stated none, which makes the total a floor rather than the bill.
+  `python3 -B scripts/run_ablation.py self-check` holds that merge to worker files whose answer is
+  arithmetic.
 
 ## Conventions
 

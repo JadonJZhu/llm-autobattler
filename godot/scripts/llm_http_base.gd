@@ -184,6 +184,7 @@ func _on_request_completed(result: int, response_code: int, headers: PackedStrin
 		return
 
 	var response: Dictionary = json.data
+	_record_api_call(response)
 	var response_text: String = _extract_response_text(response)
 	print("%s: Response text:\n%s" % [_get_client_name(), response_text])
 	_on_api_response_parsed(response_text)
@@ -206,6 +207,76 @@ func _extract_response_text(response: Dictionary) -> String:
 			if block_type == "text":
 				response_text += block_dict.get("text", "")
 		return response_text
+
+
+func _record_api_call(response: Dictionary) -> void:
+	## Puts what this call consumed into the run's own record.
+	##
+	## The response is the only place that count exists. Nothing downstream of
+	## here sees it, and the provider will only hand it back afterwards through
+	## a billing endpoint that refuses the key this project runs under, so a
+	## call whose usage is not taken here is a call nobody can ever price. It is
+	## recorded before the answer is dispatched, because a call whose text turns
+	## out to be unusable was still paid for.
+	##
+	## An empty usage block is treated as none: it names no count, so reading it
+	## as a call that consumed nothing would be a claim the response did not
+	## make.
+	var stated: Variant = response.get("usage")
+	if stated is Dictionary and not (stated as Dictionary).is_empty():
+		var usage: Dictionary = stated
+		GameLogger.log_api_call(_get_client_name(), _api_format, usage, _token_counts(usage))
+		return
+	GameLogger.log_api_call(_get_client_name(), _api_format, {}, {})
+
+
+func _token_counts(usage: Dictionary) -> Dictionary:
+	## One response's usage block read into the four counts a token price is
+	## charged against. The two formats name them differently and, for the
+	## cached part, divide them differently, and this is the only place that
+	## difference is resolved.
+	##
+	## anthropic states the three input counts side by side: input_tokens is
+	## what was charged at the full rate, and the two cache counts are on top of
+	## it. openai states one prompt_tokens that already contains both cache
+	## counts, so what was charged at the full rate is what is left once both
+	## are taken out. Reading either format as the other misstates the bill by
+	## the whole cached portion, which is the number this record exists to
+	## answer, and taking only one of openai's two out leaves the written
+	## tokens counted at the full rate here and again at the write premium by
+	## whatever prices this.
+	if _api_format == "openai":
+		var details: Variant = usage.get("prompt_tokens_details")
+		var cached: int = 0
+		var cache_write: int = 0
+		if details is Dictionary:
+			cached = _token_count(details.get("cached_tokens"))
+			cache_write = _token_count(details.get("cache_write_tokens"))
+		return {
+			"uncached_input": (
+				_token_count(usage.get("prompt_tokens")) - cached - cache_write
+			),
+			"cached_input": cached,
+			"cache_write_input": cache_write,
+			"output": _token_count(usage.get("completion_tokens")),
+		}
+	return {
+		"uncached_input": _token_count(usage.get("input_tokens")),
+		"cached_input": _token_count(usage.get("cache_read_input_tokens")),
+		"cache_write_input": _token_count(usage.get("cache_creation_input_tokens")),
+		"output": _token_count(usage.get("output_tokens")),
+	}
+
+
+static func _token_count(stated: Variant) -> int:
+	## One count as the response stated it. Both formats declare every one of
+	## these fields optional and openai nests two of them under a whole object
+	## that is itself optional, so an absent count arrives here as null as often
+	## as it arrives as a missing key. Anything that is not a number is a count
+	## the response did not state.
+	if stated is int or stated is float:
+		return int(stated)
+	return 0
 
 
 func _headers_to_map(headers: PackedStringArray) -> Dictionary:

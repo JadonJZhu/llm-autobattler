@@ -10,6 +10,7 @@ import os
 import random
 import re
 import subprocess
+import sys
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -244,6 +245,55 @@ def _load_worker_payload_with_retry(output_path: str, retries: int) -> dict[str,
     raise last_error
 
 
+def _merge_worker_usage(worker_payloads: list[dict[str, Any]]) -> dict[str, Any]:
+    """What the whole run consumed, added up from what each worker recorded.
+
+    Each worker is its own Godot process with its own counter, so no single
+    worker file holds the run's bill. Without this the merged file states what
+    the run bought and nothing about what it cost, and the only way back to a
+    dollar figure is opening every worker file by hand.
+
+    Token counts are summed under whatever names the workers used rather than a
+    list repeated here, so a count added on the Godot side reaches this total
+    without a matching edit in a second language.
+
+    A worker whose file states no usage is counted rather than skipped. Its
+    calls are missing from these sums, so a total carrying any of them is a
+    floor, and a resumed run reusing worker files written before usage was
+    recorded is exactly when that happens. `models` is a list for the same
+    reason: a resume that changed LLM_API_MODEL merges workers that ran against
+    different models, and one token count times one price is then wrong.
+    """
+    models: set[str] = set()
+    calls = 0
+    calls_without_usage = 0
+    workers_without_usage = 0
+    tokens: dict[str, int] = {}
+
+    for payload in worker_payloads:
+        stated = payload.get("usage")
+        if not isinstance(stated, dict):
+            workers_without_usage += 1
+            continue
+        model = stated.get("model")
+        if isinstance(model, str) and model:
+            models.add(model)
+        calls += int(stated.get("calls", 0))
+        calls_without_usage += int(stated.get("calls_without_usage", 0))
+        stated_tokens = stated.get("tokens")
+        if isinstance(stated_tokens, dict):
+            for name, count in stated_tokens.items():
+                tokens[name] = tokens.get(name, 0) + int(count)
+
+    return {
+        "models": sorted(models),
+        "calls": calls,
+        "calls_without_usage": calls_without_usage,
+        "workers_without_usage": workers_without_usage,
+        "tokens": tokens,
+    }
+
+
 def _merge_worker_payloads(
     worker_payloads: list[dict[str, Any]],
     worker_results: list[dict[str, Any]],
@@ -288,6 +338,7 @@ def _merge_worker_payloads(
         "resumed_from_checkpoint": resumed_from_checkpoint,
         "incomplete_run": incomplete_run,
         "missing_configs": missing_configs,
+        "usage": _merge_worker_usage(worker_payloads),
         "workers": worker_results,
         "results": {
             "max_attempts_per_puzzle": max_attempts,
@@ -361,7 +412,102 @@ def _load_checkpoint_if_valid(
     return raw
 
 
+def _self_check() -> int:
+    """Hold the merged file to the property the per-call recording exists for.
+
+    A run is priced from the file it writes. For a parallel run that file is the
+    merged one, and every count in it comes through the merge below, so this
+    checks the merge against worker files whose right answer is arithmetic.
+    """
+
+    def worker(usage: Any) -> dict[str, Any]:
+        payload: dict[str, Any] = {"results": {"results": [], "by_config": {}}}
+        if usage is not None:
+            payload["usage"] = usage
+        return payload
+
+    def spent(model: str, calls: int, unstated: int, **tokens: int) -> dict[str, Any]:
+        return {
+            "model": model,
+            "calls": calls,
+            "calls_without_usage": unstated,
+            "tokens": dict(tokens),
+        }
+
+    sonnet = "claude-sonnet-4-6"
+
+    summed = _merge_worker_usage([
+        worker(spent(sonnet, 4, 0, uncached_input=100, cached_input=0, output=20)),
+        worker(spent(sonnet, 6, 1, uncached_input=200, cached_input=50, output=30)),
+    ])
+    assert summed["calls"] == 10, summed
+    assert summed["calls_without_usage"] == 1, summed
+    assert summed["workers_without_usage"] == 0, summed
+    assert summed["models"] == [sonnet], summed
+    assert summed["tokens"] == {
+        "uncached_input": 300,
+        "cached_input": 50,
+        "output": 50,
+    }, summed
+
+    union = _merge_worker_usage([
+        worker(spent(sonnet, 1, 0, uncached_input=10)),
+        worker(spent(sonnet, 1, 0, uncached_input=10, cache_write_input=7)),
+    ])
+    assert union["tokens"] == {"uncached_input": 20, "cache_write_input": 7}, union
+
+    mixed = _merge_worker_usage([
+        worker(spent(sonnet, 1, 0, output=1)),
+        worker(spent("gpt-5.6", 1, 0, output=1)),
+    ])
+    assert mixed["models"] == ["claude-sonnet-4-6", "gpt-5.6"], mixed
+
+    # A worker file written before usage was recorded, which is what a resumed
+    # run reuses. Its calls are missing from the sums, so the total is a floor
+    # and the count of such workers is what says so.
+    partial = _merge_worker_usage([
+        worker(spent(sonnet, 3, 0, output=9)),
+        worker(None),
+    ])
+    assert partial["workers_without_usage"] == 1, partial
+    assert partial["calls"] == 3, partial
+    assert partial["tokens"] == {"output": 9}, partial
+
+    # The keyless arm. It sent nothing, and what separates it from a run that
+    # never counted is that it states a model, a zero and a four-count block.
+    keyless_model = "none (no API key: every LLM placement was random)"
+    keyless = _merge_worker_usage([
+        worker(spent(keyless_model, 0, 0, uncached_input=0, cached_input=0,
+                     cache_write_input=0, output=0)),
+    ])
+    assert keyless["models"] == [keyless_model], keyless
+    assert keyless["calls"] == 0, keyless
+    assert keyless["workers_without_usage"] == 0, keyless
+    assert keyless["tokens"] == {
+        "uncached_input": 0,
+        "cached_input": 0,
+        "cache_write_input": 0,
+        "output": 0,
+    }, keyless
+    assert keyless != partial, "a run that spent nothing is not a run that recorded nothing"
+
+    merged = _merge_worker_payloads(
+        [worker(spent(sonnet, 2, 0, output=5))],
+        [{"config": "I0_E0_R0"}],
+        "mini",
+        10,
+    )
+    assert merged["usage"]["calls"] == 2, merged["usage"]
+    assert merged["usage"]["tokens"] == {"output": 5}, merged["usage"]
+
+    print("merged usage self-check: 6 properties held")
+    return 0
+
+
 def main() -> int:
+    if len(sys.argv) > 1 and sys.argv[1] == "self-check":
+        return _self_check()
+
     parser = argparse.ArgumentParser(description="Run Godot ablation workers in parallel.")
     parser.add_argument(
         "--godot-path",
