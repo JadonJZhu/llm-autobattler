@@ -44,6 +44,21 @@ This module measures that. In order:
    It also stamps the arguments this run resolved, so the file says what would
    produce it again: see ``study_provenance``.
 
+STRUCTURE IS BUILT IN; ONLY DIFFICULTY IS SAMPLED FOR. Difficulty is knowable
+only by enumerating, so aiming at it costs every candidate that missed. The two
+other things a suite has to control are properties of a puzzle's own
+description: how large the agent's action space is, which its shop and its gold
+settle on their own, and which unit types the opponent fields, which its queue
+settles. Those are constructed rather than rejected for, so asking for them
+costs no enumerations at all. ``--suite-plays`` names action-space targets as
+exact counts of legal plays and ``--opponent-mix`` names the units every
+opponent fields. Each action-space target is a stratum, reported separately at
+every step above, because a run under one target draws from a different
+population than a run under another and a pooled prior would price a rule no
+stratum spends. The suite then crosses the strata against the difficulty bins,
+one quota per cell, which is what lets difficulty and action-space size be
+varied independently instead of together.
+
 DIFFICULTY here is ``analysis``'s: the fraction of complete legal plays that
 win, a win being ``llm_score > human_score``. ``self-check`` runs this module's
 counter and ``analysis.analyze_puzzle`` over the shipped suite and requires them
@@ -77,6 +92,7 @@ import argparse
 import contextlib
 import copy
 import io
+import itertools
 import json
 import math
 import random
@@ -84,6 +100,7 @@ import statistics
 import sys
 import tempfile
 from dataclasses import dataclass, replace
+from functools import lru_cache
 from pathlib import Path
 from time import perf_counter
 
@@ -122,6 +139,157 @@ BOOTSTRAP_TRIALS = 2000
 TIMING_REPEATS = 3
 
 
+# --- What a candidate is built to satisfy ---
+
+
+@lru_cache(maxsize=None)
+def action_space_table():
+    """Every action-space size the agent can be dealt, and what deals it.
+
+    The agent's action space is settled by its shop and its gold alone:
+    ``prep.enumerate_plays`` walks the agent's own squares and reads nothing
+    about the opponent, so the number of legal plays is a property a puzzle can
+    be built to hit rather than one it has to be measured for. This is the whole
+    table of what is hittable, keyed by play count and holding the ``(shop,
+    gold)`` pairs that give it.
+
+    Counted by walking the enumeration, the same way ``prep.count_plays`` does,
+    because a formula over gold and squares would be a second implementation of
+    the rule that decides what a play is. The whole table costs a couple of
+    seconds and is built once per process.
+    """
+    table = {}
+    for shop in itertools.combinations(ALL_TYPES, AGENT_SHOP_SIZE):
+        for gold in GOLD_BAND:
+            probe = prep.Puzzle(
+                id="probe",
+                difficulty=1,
+                llm_shop=shop,
+                llm_gold=gold,
+                opponent_shop=(engine.A,),
+                opponent_gold=0,
+                opponent_placements=(),
+            )
+            table.setdefault(prep.count_plays(probe), []).append((shop, gold))
+    return {plays: tuple(options) for plays, options in sorted(table.items())}
+
+
+def parse_plays(text):
+    """Action-space targets named on the command line, as exact play counts.
+
+    Refuses a count no shop and gold produces, and names the ones that exist:
+    the reachable set is small and fixed by the game's unit costs and its board,
+    so a target off it is a typo, and the run it would produce is a long cap
+    that fills nothing.
+    """
+    table = action_space_table()
+    targets = []
+    for part in text.split(","):
+        plays = int(part)
+        if plays not in table:
+            raise argparse.ArgumentTypeError(
+                "no shop and gold gives the agent %d legal plays; the reachable "
+                "counts are %s" % (plays, ", ".join(str(key) for key in table))
+            )
+        if plays in targets:
+            raise argparse.ArgumentTypeError("%d named twice" % plays)
+        targets.append(plays)
+    return tuple(targets)
+
+
+def parse_mix(text):
+    """The units every generated opponent fields, as a multiset of type labels.
+
+    Sorted on the way in, so two spellings of one mix are one recorded stamp and
+    read back through the parser as themselves. Refuses a mix no opponent can be
+    dealt: more units than it has squares, a cost above the top of the gold
+    band, or a label that is not a unit type.
+    """
+    labels = [part.strip() for part in text.split(",") if part.strip()]
+    if not labels:
+        raise argparse.ArgumentTypeError("a mix names at least one unit: %r" % text)
+    if len(labels) > len(OPPONENT_SQUARES):
+        raise argparse.ArgumentTypeError(
+            "the opponent has %d squares and this mix fields %d units: %s"
+            % (len(OPPONENT_SQUARES), len(labels), text)
+        )
+    try:
+        types = [engine.label_to_type(label) for label in labels]
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(str(error)) from None
+    cost = sum(engine.UNIT_COSTS[unit_type] for unit_type in types)
+    if cost > max(GOLD_BAND):
+        raise argparse.ArgumentTypeError(
+            "this mix costs %d and the opponent is dealt at most %d gold: %s"
+            % (cost, max(GOLD_BAND), text)
+        )
+    return tuple(sorted(engine.TYPE_LABELS[unit_type] for unit_type in types))
+
+
+@lru_cache(maxsize=None)
+def mix_shops(mix):
+    """The opponent shops a queue fielding ``mix`` can be dealt.
+
+    Every shop the generator deals is a legal one, so this is the shops of a
+    size ``OPPONENT_SHOP_SIZES`` allows that hold every type the mix names. A
+    mix naming all four types therefore forces the four-type shop, which is a
+    real narrowing of the draw and not a bug: a shop is what makes a placement
+    affordable, and a unit the shop does not carry is a unit the opponent is
+    refused.
+    """
+    needed = set(mix)
+    return tuple(
+        shop
+        for size in OPPONENT_SHOP_SIZES
+        for shop in itertools.combinations(ALL_TYPES, size)
+        if needed <= set(shop)
+    )
+
+
+@dataclass(frozen=True)
+class Structure:
+    """What a candidate is built to satisfy, as against what it is measured for.
+
+    ``plays`` is the size of the agent's action space, as an exact count of
+    complete legal plays, and ``mix`` is the tuple of unit types the opponent
+    fields. Either left None is that half of the puzzle drawn the way it was
+    before any constraint existed, so the unconstrained structure reproduces the
+    generator exactly as it was.
+    """
+
+    plays: int = None
+    mix: tuple = None
+
+    @property
+    def label(self):
+        return "action space %s, opponent %s" % (
+            "%d plays" % self.plays if self.plays is not None else "unconstrained",
+            "/".join(engine.TYPE_LABELS[t] for t in self.mix)
+            if self.mix is not None
+            else "unconstrained",
+        )
+
+
+UNCONSTRAINED = Structure()
+
+
+def structures(args):
+    """The strata a study draws from: one per action-space target, or one.
+
+    The mix is the same in every stratum, because holding it steady across the
+    whole suite is the point of naming it; the action-space target is what
+    separates one stratum from the next.
+    """
+    mix = (
+        None
+        if args.opponent_mix is None
+        else tuple(engine.label_to_type(label) for label in args.opponent_mix)
+    )
+    if args.suite_plays is None:
+        return (Structure(None, mix),)
+    return tuple(Structure(plays, mix) for plays in args.suite_plays)
+
+
 # --- Generating one puzzle ---
 
 
@@ -150,19 +318,57 @@ def _random_queue(rng, shop, gold):
     return tuple(queue)
 
 
-def random_puzzle(rng, puzzle_id):
-    """One random legal puzzle. ``difficulty`` is a placeholder here; the value
-    the loader reads is set per puzzle by ``puzzle_json`` when a suite is written.
+def _mix_queue(rng, mix):
+    """A queue fielding exactly ``mix``, on distinct squares, in a random order.
+
+    Lands in full for the same reason ``_random_queue`` does, one step earlier:
+    the gold it is dealt with is never below what the mix costs, so no entry is
+    refused and none is left unconsumed, and the squares are distinct and the
+    opponent's own. ``draw`` asserts the property rather than trusting this
+    paragraph.
+
+    What is left free is the whole of the board: which squares the units take
+    and in what order they are placed. That is the only thing a constrained
+    draw can vary, and it is what difficulty is reject-sampled over.
+    """
+    order = list(mix)
+    rng.shuffle(order)
+    squares = rng.sample(OPPONENT_SQUARES, len(order))
+    return tuple(
+        prep.Placement(unit_type, pos) for unit_type, pos in zip(order, squares)
+    )
+
+
+def random_puzzle(rng, puzzle_id, structure=UNCONSTRAINED):
+    """One random legal puzzle inside ``structure``. ``difficulty`` is a
+    placeholder here; the value the loader reads is set per puzzle by
+    ``puzzle_json`` when a suite is written.
 
     Every draw is a statement here rather than an argument, so the order the
     seed is consumed in is the order it is read in and a seed reproduces the
-    same puzzle.
+    same puzzle. A constrained half draws from a narrower set in the same place
+    the unconstrained half draws from the full one, so the two paths consume the
+    seed at the same points and an unconstrained run is the run it always was.
     """
-    opponent_shop = tuple(rng.sample(ALL_TYPES, rng.choice(OPPONENT_SHOP_SIZES)))
-    opponent_gold = rng.choice(GOLD_BAND)
-    llm_shop = tuple(rng.sample(ALL_TYPES, AGENT_SHOP_SIZE))
-    llm_gold = rng.choice(GOLD_BAND)
-    queue = _random_queue(rng, opponent_shop, opponent_gold)
+    if structure.mix is None:
+        opponent_shop = tuple(rng.sample(ALL_TYPES, rng.choice(OPPONENT_SHOP_SIZES)))
+        opponent_gold = rng.choice(GOLD_BAND)
+    else:
+        # A mix is dealt a shop that carries every type in it and gold that
+        # covers it, which is what makes the queue below land in full.
+        cost = sum(engine.UNIT_COSTS[unit_type] for unit_type in structure.mix)
+        opponent_shop = rng.choice(mix_shops(structure.mix))
+        opponent_gold = rng.choice([gold for gold in GOLD_BAND if gold >= cost])
+    if structure.plays is None:
+        llm_shop = tuple(rng.sample(ALL_TYPES, AGENT_SHOP_SIZE))
+        llm_gold = rng.choice(GOLD_BAND)
+    else:
+        llm_shop, llm_gold = rng.choice(action_space_table()[structure.plays])
+    queue = (
+        _random_queue(rng, opponent_shop, opponent_gold)
+        if structure.mix is None
+        else _mix_queue(rng, structure.mix)
+    )
     return prep.Puzzle(
         id=puzzle_id,
         difficulty=1,
@@ -179,16 +385,30 @@ def random_puzzle(rng, puzzle_id):
 
 @dataclass(frozen=True)
 class Candidate:
-    """A random puzzle and the enumeration that measured its difficulty."""
+    """A random puzzle and the enumeration that measured its difficulty.
+
+    The play lengths are summed and bracketed during that same enumeration
+    rather than recovered later. A call budget is built from how many placements
+    an attempt takes, so something has to read it, and reading it afterwards
+    means walking every play of every accepted puzzle a second time, which on a
+    half-million-play puzzle costs as much as measuring the difficulty did.
+    """
 
     puzzle: prep.Puzzle
     play_count: int
     win_count: int
+    placement_count: int
+    shortest_play: int
+    longest_play: int
     seconds: float
 
     @property
     def difficulty(self):
         return self.win_count / self.play_count
+
+    @property
+    def mean_play_length(self):
+        return self.placement_count / self.play_count
 
 
 def evaluate(puzzle):
@@ -207,6 +427,9 @@ def evaluate(puzzle):
     """
     play_count = 0
     win_count = 0
+    placement_count = 0
+    shortest = None
+    longest = None
     start = perf_counter()
     for play in prep.enumerate_plays(puzzle):
         result = engine.run_battle(prep.build_board(puzzle, play))
@@ -216,13 +439,25 @@ def evaluate(puzzle):
                 % (analysis.encode_play(play), puzzle.id)
             )
         final = result["final"]
+        length = len(play)
         play_count += 1
+        placement_count += length
+        shortest = length if shortest is None else min(shortest, length)
+        longest = length if longest is None else max(longest, length)
         if final["llm_score"] > final["human_score"]:
             win_count += 1
-    return Candidate(puzzle, play_count, win_count, perf_counter() - start)
+    return Candidate(
+        puzzle,
+        play_count,
+        win_count,
+        placement_count,
+        shortest,
+        longest,
+        perf_counter() - start,
+    )
 
 
-def draw(rng, puzzle_id):
+def draw(rng, puzzle_id, structure=UNCONSTRAINED):
     """A random puzzle, measured, with its queue held to landing in full.
 
     The check is a postcondition on the generator and not a rejection rule:
@@ -232,16 +467,16 @@ def draw(rng, puzzle_id):
     otherwise write them into a suite, and every difficulty measured from that
     suite would describe boards other than the ones its file states.
     """
-    puzzle = random_puzzle(rng, puzzle_id)
+    puzzle = random_puzzle(rng, puzzle_id, structure)
     prep.check_queue_lands(puzzle)
     return evaluate(puzzle)
 
 
-def sample_candidates(rng, count, prefix, on_candidate=None):
+def sample_candidates(rng, count, prefix, on_candidate=None, structure=UNCONSTRAINED):
     """Evaluate ``count`` random puzzles, reporting each as it lands."""
     candidates = []
     for index in range(count):
-        candidate = draw(rng, "%s%d" % (prefix, index))
+        candidate = draw(rng, "%s%d" % (prefix, index), structure)
         candidates.append(candidate)
         if on_candidate is not None:
             on_candidate(index, candidate)
@@ -349,23 +584,43 @@ def target_classifier(targets, band):
 
 @dataclass
 class SuiteRun:
-    """What filling the bins cost, whether or not they all filled."""
+    """What filling the cells cost, whether or not they all filled.
 
+    A cell is one structure crossed with one difficulty bin, so ``quotas``,
+    ``accepted`` and ``filled_at`` are all indexed structure first and bin
+    second, and ``attempts`` is per structure because what a stratum costs is
+    the thing a crossed run most needs to be able to read separately.
+    """
+
+    structures: tuple
     edges: list
     quotas: list
     accepted: list
     filled_at: list
-    attempts: int
+    attempts: list
     degenerate: int
     seconds: float
 
     @property
     def accepted_count(self):
-        return sum(len(bucket) for bucket in self.accepted)
+        return sum(len(bucket) for row in self.accepted for bucket in row)
+
+    @property
+    def total_attempts(self):
+        return sum(self.attempts)
+
+    def short_cells(self):
+        """The cells that did not reach their quota, as (structure, bin)."""
+        return [
+            (outer, inner)
+            for outer, row in enumerate(self.quotas)
+            for inner, quota in enumerate(row)
+            if len(self.accepted[outer][inner]) < quota
+        ]
 
 
-def build_suite(rng, edges, quotas, cap, on_candidate=None):
-    """Reject-sample until every bin holds its quota or ``cap`` enumerations.
+def build_suite(rng, structures, edges, quotas, cap, on_candidate=None):
+    """Reject-sample until every cell holds its quota or ``cap`` enumerations.
 
     A candidate is accepted into its own bin if that bin still has room, so a
     suite spanning a range costs far less than the same number of puzzles at one
@@ -374,31 +629,61 @@ def build_suite(rng, edges, quotas, cap, on_candidate=None):
     and not that window. A degenerate candidate is rejected wherever it falls,
     which is what keeps the end bins from filling with puzzles the agent cannot
     affect. The cap is what stops an unreachable bin from running forever; the
-    caller reports which bins were short.
+    caller reports which cells were short.
+
+    A candidate can only fill a cell of the structure it was drawn under,
+    because its structure is built into it rather than measured off it. So the
+    structures are drawn round robin among those still short, and the cap is
+    spent across all of them: one expensive stratum cannot spend the whole cap
+    before a cheap one has begun, and a stratum that has filled stops drawing.
     """
     classify = suite_classifier(edges)
-    accepted = [[] for _ in quotas]
-    filled_at = [None] * len(quotas)
-    attempts = 0
+    accepted = [[[] for _ in row] for row in quotas]
+    filled_at = [[None] * len(row) for row in quotas]
+    attempts = [0] * len(structures)
     degenerate = 0
     start = perf_counter()
-    while attempts < cap and any(
-        len(bucket) < quota for bucket, quota in zip(accepted, quotas)
+
+    def still_short(outer):
+        return any(
+            len(bucket) < quota
+            for bucket, quota in zip(accepted[outer], quotas[outer])
+        )
+
+    turn = 0
+    while sum(attempts) < cap and any(
+        still_short(outer) for outer in range(len(structures))
     ):
-        candidate = draw(rng, "gen%d" % attempts)
-        attempts += 1
+        while not still_short(turn % len(structures)):
+            turn += 1
+        outer = turn % len(structures)
+        turn += 1
+        candidate = draw(rng, "gen%d" % sum(attempts), structures[outer])
+        attempts[outer] += 1
         if is_degenerate(candidate.difficulty):
             degenerate += 1
         index = classify(candidate.difficulty)
-        taken = index is not None and len(accepted[index]) < quotas[index]
+        taken = index is not None and len(accepted[outer][index]) < quotas[outer][index]
         if taken:
-            accepted[index].append(candidate)
-            if len(accepted[index]) == quotas[index]:
-                filled_at[index] = attempts
+            accepted[outer][index].append(candidate)
+            if len(accepted[outer][index]) == quotas[outer][index]:
+                filled_at[outer][index] = attempts[outer]
         if on_candidate is not None:
-            on_candidate(attempts, candidate, index if taken else None)
+            on_candidate(
+                structures[outer],
+                sum(attempts),
+                candidate,
+                index if taken else None,
+            )
     return SuiteRun(
-        edges, quotas, accepted, filled_at, attempts, degenerate, perf_counter() - start
+        tuple(structures),
+        edges,
+        quotas,
+        accepted,
+        filled_at,
+        attempts,
+        degenerate,
+        perf_counter() - start,
     )
 
 
@@ -419,6 +704,8 @@ STUDY_PARAMETERS = (
     "suite_size",
     "suite_bins",
     "suite_edges",
+    "suite_plays",
+    "opponent_mix",
     "suite_cap",
 )
 STUDY_OUTPUTS = ("suite_out", "record_out", "verbose")
@@ -429,12 +716,12 @@ def study_parameters(args):
 
     Resolved rather than as typed, because an argument the run left to a default
     reproduces a different file the day that default moves, and what the run
-    actually used is the recorded value. Seven of the eight defaults are
-    argparse's and arrive here already applied; the bin count's is a layer below
-    it, in ``suite_bin_count``, so a run that named neither the count nor the
-    edges is recorded with the count that run binned the prior at. The literal
-    command line is kept beside this by ``study_provenance``, since the resolved
-    set cannot recover it.
+    actually used is the recorded value. Every default but one is argparse's and
+    arrives here already applied; the bin count's is a layer below it, in
+    ``suite_bin_count``, so a run that named neither the count nor the edges is
+    recorded with the count that run binned the prior at. The literal command
+    line is kept beside this by ``study_provenance``, since the resolved set
+    cannot recover it.
     """
     resolved = {}
     for name in STUDY_PARAMETERS:
@@ -443,6 +730,16 @@ def study_parameters(args):
     if resolved["suite_edges"] is None:
         resolved["suite_bins"] = suite_bin_count(args)
     return resolved
+
+
+def _parameter_token(value):
+    """One recorded value as the text the parser reads it back from.
+
+    ``repr`` for a number, so a float keeps every digit it was resolved at and
+    an integer stays an integer; the value itself for a unit-type label, since
+    a quoted label is not a label.
+    """
+    return value if isinstance(value, str) else repr(value)
 
 
 def study_command(parameters):
@@ -461,9 +758,9 @@ def study_command(parameters):
             continue
         tokens.append("--" + name.replace("_", "-"))
         if isinstance(value, list):
-            tokens.append(",".join(repr(float(part)) for part in value))
+            tokens.append(",".join(_parameter_token(part) for part in value))
         else:
-            tokens.append(repr(value))
+            tokens.append(_parameter_token(value))
     return tokens
 
 
@@ -534,18 +831,26 @@ def accepted_in_order(run):
     it. The win fraction ``analysis`` calls difficulty runs the other way, and
     this is the one place the two meet.
 
-    Rank 1 is the easiest puzzle in the file and rank N the hardest, ties inside
-    a bin broken by win fraction. Rank rises with tier by construction, so the
-    unique field the loader keeps carries the same direction the tier does.
+    Rank 1 is the easiest puzzle in the file and rank N the hardest. The order
+    is the win fraction itself, across every cell at once rather than bin by
+    bin, because a crossed run fills the same bin under several structures and
+    ranking those by cell would put a puzzle of one structure above an easier
+    puzzle of another. The bins partition the win fraction, so ranking by it
+    still rises with tier, and the unique field the loader keeps still carries
+    the same direction the tier does.
     """
-    bins = len(run.accepted)
-    rank = 0
-    for index in range(bins - 1, -1, -1):
-        for candidate in sorted(
-            run.accepted[index], key=lambda c: c.difficulty, reverse=True
-        ):
-            rank += 1
-            yield rank, bins - index, candidate
+    bins = len(run.edges) - 1
+    ranked = sorted(
+        (
+            (bins - index, candidate)
+            for row in run.accepted
+            for index, bucket in enumerate(row)
+            for candidate in bucket
+        ),
+        key=lambda pair: -pair[1].difficulty,
+    )
+    for rank, (tier, candidate) in enumerate(ranked, start=1):
+        yield rank, tier, candidate
 
 
 def suite_puzzles(run):
@@ -921,67 +1226,206 @@ def report_timing(values):
 
 
 def report_suite(run):
+    bins = len(run.edges) - 1
     print()
     print(
-        "SUITE: %d bins spanning %.4f to %.4f, degenerate puzzles rejected"
-        % (len(run.quotas), run.edges[0], run.edges[-1])
+        "SUITE: %d bins spanning %.4f to %.4f crossed against %d structure(s), "
+        "degenerate puzzles rejected"
+        % (bins, run.edges[0], run.edges[-1], len(run.structures))
     )
     print(
         "  %d of %d puzzles accepted from %d enumerations in %.1f s"
-        % (run.accepted_count, sum(run.quotas), run.attempts, run.seconds)
-    )
-    print("  bin              tier  quota  filled  full at  difficulties")
-    short = []
-    for index, bucket in enumerate(run.accepted):
-        values = sorted(c.difficulty for c in bucket)
-        print(
-            "  %.4f-%.4f  %4d  %5d  %6d  %7s  %s"
-            % (
-                run.edges[index],
-                run.edges[index + 1],
-                len(run.accepted) - index,
-                run.quotas[index],
-                len(values),
-                run.filled_at[index] if run.filled_at[index] else "-",
-                " ".join("%.4f" % value for value in values) or "-",
-            )
+        % (
+            run.accepted_count,
+            sum(sum(row) for row in run.quotas),
+            run.total_attempts,
+            run.seconds,
         )
-        if len(values) < run.quotas[index]:
-            short.append(index)
+    )
+    for outer, structure in enumerate(run.structures):
+        print("  %s: %d enumerations" % (structure.label, run.attempts[outer]))
+        print("    bin              tier  quota  filled  full at  difficulties")
+        for index in range(bins):
+            values = sorted(c.difficulty for c in run.accepted[outer][index])
+            print(
+                "    %.4f-%.4f  %4d  %5d  %6d  %7s  %s"
+                % (
+                    run.edges[index],
+                    run.edges[index + 1],
+                    bins - index,
+                    run.quotas[outer][index],
+                    len(values),
+                    run.filled_at[outer][index] or "-",
+                    " ".join("%.4f" % value for value in values) or "-",
+                )
+            )
     print(
         "  %d of the %d enumerations were degenerate and rejected wherever they fell"
-        % (run.degenerate, run.attempts)
+        % (run.degenerate, run.total_attempts)
     )
     if run.accepted_count:
         print(
             "  %.1f enumerations and %.1f s per accepted puzzle, under the bin rule "
             "and not the band the acceptance table measures"
-            % (run.attempts / run.accepted_count, run.seconds / run.accepted_count)
+            % (
+                run.total_attempts / run.accepted_count,
+                run.seconds / run.accepted_count,
+            )
         )
+    short = run.short_cells()
     if short:
         print(
             "  UNFILLED after the %d-enumeration cap: %s"
             % (
-                run.attempts,
+                run.total_attempts,
                 ", ".join(
-                    "%.4f-%.4f (%d of %d)"
+                    "%s %.4f-%.4f (%d of %d)"
                     % (
+                        run.structures[outer].label,
                         run.edges[index],
                         run.edges[index + 1],
-                        len(run.accepted[index]),
-                        run.quotas[index],
+                        len(run.accepted[outer][index]),
+                        run.quotas[outer][index],
                     )
-                    for index in short
+                    for outer, index in short
                 ),
             )
         )
     return short
 
 
+def column_floors(column):
+    """The smallest one-sided p a predictor column can reach, against two outcomes.
+
+    ``1/n!`` is the floor of the test only where nothing ties, and a suite is
+    built knowing its predictor columns and not its outcome column, so the
+    honest figure is a pair: what the column reaches against an outcome whose
+    every value is distinct, and what it reaches against a balanced win-or-not
+    split, which is the coarsest column an arm's wins can come back as. Ties in
+    the predictor raise both, which is how a suite with few distinct play counts
+    caps its own action-space test.
+
+    Measured by ``outcomes.permutation_test``, on the column itself, so it is the
+    floor of the test that will actually be run rather than a formula standing in
+    for it. ``outcomes`` imports this module, so the import is made here.
+    """
+    import outcomes
+
+    half = len(column) // 2
+    return (
+        outcomes.permutation_test(column, list(range(len(column))), +1).floor,
+        outcomes.permutation_test(
+            column, [1] * half + [0] * (len(column) - half), +1
+        ).floor,
+    )
+
+
+def report_crossing(run):
+    """What the accepted suite holds steady and what it varies, measured on it.
+
+    Three properties decide whether a null result about difficulty is about
+    difficulty. Difficulty and the size of the action space have to vary
+    independently, or a suite cannot tell a difficulty measure that fails to
+    predict from an action space that dominates. The opponent's unit mix has to
+    be the same puzzle to puzzle, or "harder" and "more of one unit type" are
+    the same axis. And the suite has to hold enough puzzles that the exact
+    permutation test has somewhere below the observed pairing to go.
+
+    All three are measured here rather than asserted, and the rank correlation
+    is ``outcomes.spearman``, the one the study's own test will compute on this
+    suite, midranks and all. ``outcomes`` imports this module, so the import is
+    made here, at the one call, rather than at the top of the file.
+
+    Difficulty is the win fraction and not the rank the file records, so the
+    sign is the one ``analysis`` uses. The rank is a strictly decreasing
+    function of it, so the magnitude is the same either way and the sign flips.
+    """
+    import outcomes
+
+    accepted = [candidate for _rank, _tier, candidate in accepted_in_order(run)]
+    print()
+    print("CROSSING: what the %d accepted puzzles hold steady" % len(accepted))
+    if not accepted:
+        print("  nothing was accepted, so there is nothing to describe")
+        return
+
+    plays = [c.play_count for c in accepted]
+    difficulties = [c.difficulty for c in accepted]
+    rho = outcomes.spearman(difficulties, plays)
+    orderings = math.factorial(len(accepted))
+    print(
+        "  difficulty against legal plays: spearman %s over %d puzzles, "
+        "%d distinct play counts"
+        % ("none, one column is constant" if rho is None else "%+.3f" % rho,
+           len(accepted), len(set(plays)))
+    )
+    if orderings > outcomes.EXACT_LIMIT:
+        print(
+            "  %d puzzles is %d pairings, past the %d outcomes.permutation_test "
+            "enumerates: it will refuse this suite rather than sample a p, so "
+            "neither column below can be tested at all"
+            % (len(accepted), orderings, outcomes.EXACT_LIMIT)
+        )
+    else:
+        print(
+            "  smallest one-sided p each column can reach, measured on the column "
+            "itself; 1/%d! = %.6f is what an untied column would give"
+            % (len(accepted), 1.0 / orderings)
+        )
+        print("    column      outcome all distinct  outcome a %d/%d win split"
+              % (len(accepted) // 2, len(accepted) - len(accepted) // 2))
+        for name, column in (("difficulty", difficulties), ("legal plays", plays)):
+            distinct, split = column_floors(column)
+            print("    %-10s  %18.6f  %21.6f" % (name, distinct, split))
+        print(
+            "    the legal plays row is the cap on the action-space test whatever "
+            "the effect size, because the suite holds %d play counts over %d "
+            "puzzles and tied predictors raise the floor the same way tied "
+            "outcomes do" % (len(set(plays)), len(accepted))
+        )
+
+    counts = {label: 0 for label in engine.TYPE_LABELS.values()}
+    shares = {label: [] for label in counts}
+    for candidate in accepted:
+        queue = candidate.puzzle.opponent_placements
+        for label in counts:
+            held = sum(
+                1
+                for placement in queue
+                if engine.TYPE_LABELS[placement.unit_type] == label
+            )
+            counts[label] += held
+            shares[label].append(held / len(queue))
+    total = sum(counts.values())
+    print("  opponent units: %d over %d puzzles" % (total, len(accepted)))
+    print("    type  suite share  per-puzzle share, min to max")
+    for label in sorted(counts):
+        print(
+            "    %-4s  %10.3f  %.3f to %.3f"
+            % (label, counts[label] / total, min(shares[label]), max(shares[label]))
+        )
+
+    print(
+        "  placements per attempt: %.3f over the suite, taken over every legal "
+        "play; no attempt is shorter than %d or longer than %d"
+        % (
+            statistics.mean(c.mean_play_length for c in accepted),
+            min(c.shortest_play for c in accepted),
+            max(c.longest_play for c in accepted),
+        )
+    )
+    print(
+        "    a mean over the plays and not over what an agent picks, which is the "
+        "estimate available before an arm runs. It is what a call budget is built "
+        "from, at whatever rate of model calls per placement an arm turns out to "
+        "spend."
+    )
+
+
 # --- CLI ---
 
 
-def _record(prior, run, timing, args):
+def _record(priors, run, timing, args):
     return {
         "seed": args.seed,
         "band": args.band,
@@ -989,15 +1433,18 @@ def _record(prior, run, timing, args):
         "timing_us_per_play": timing,
         "prior": [
             {
+                "structure": structure.label,
                 "puzzle": puzzle_json(candidate, 1, 1),
                 "difficulty": candidate.difficulty,
                 "play_count": candidate.play_count,
                 "win_count": candidate.win_count,
                 "seconds": candidate.seconds,
             }
+            for structure, prior in priors
             for candidate in prior
         ],
         "suite": {
+            "structures": [structure.label for structure in run.structures],
             "edges": run.edges,
             "quotas": run.quotas,
             "attempts": run.attempts,
@@ -1033,6 +1480,8 @@ def suite_edges(args, difficulties):
 
 def _study(args):
     rng = random.Random(args.seed)
+    strata = structures(args)
+    crossed = strata != (UNCONSTRAINED,)
 
     def trace(index, candidate):
         print(
@@ -1041,34 +1490,58 @@ def _study(args):
             file=sys.stderr,
         )
 
-    prior = sample_candidates(rng, args.sample, "rand", trace if args.verbose else None)
-    timing = timing_spread(prior)
+    priors = [
+        (
+            structure,
+            sample_candidates(
+                rng,
+                args.sample,
+                "rand" if not crossed else "rand%d-" % outer,
+                trace if args.verbose else None,
+                structure,
+            ),
+        )
+        for outer, structure in enumerate(strata)
+    ]
+    pooled = [candidate for _structure, prior in priors for candidate in prior]
+    timing = timing_spread(pooled)
     report_timing(timing)
-    difficulties = report_prior(prior)
-    report_targets(prior, args.targets, args.band)
 
-    edges = suite_edges(args, difficulties)
-    quotas = bin_quotas(args.suite_size, len(edges) - 1)
-    report_forecast(
-        difficulties,
-        edges,
-        quotas,
-        args.targets,
-        args.band,
-        sum(c.seconds for c in prior) / len(prior),
-        args.seed + 2,
-    )
+    # The bins are the same in every stratum, so where the caller did not name
+    # them they come off the pooled prior: a stratum is a narrower population
+    # and edges fitted to one of them would leave the others unfillable at an
+    # end. Where the caller named them this reads nothing.
+    edges = suite_edges(args, sorted(c.difficulty for c in pooled))
+    per_structure = bin_quotas(args.suite_size, len(strata))
+    quotas = [bin_quotas(size, len(edges) - 1) for size in per_structure]
 
-    def suite_trace(attempts, candidate, index):
+    for outer, (structure, prior) in enumerate(priors):
+        if crossed:
+            print()
+            print("=== %s ===" % structure.label)
+        difficulties = report_prior(prior)
+        report_targets(prior, args.targets, args.band)
+        report_forecast(
+            difficulties,
+            edges,
+            quotas[outer],
+            args.targets,
+            args.band,
+            sum(c.seconds for c in prior) / len(prior),
+            args.seed + 2,
+        )
+
+    def suite_trace(structure, attempts, candidate, index):
         # Always the accepted ones, because a band the prior barely reached
         # spends most of a long cap between them, and a run that prints nothing
         # for an hour reads as a stall rather than as the cost it is.
         if index is None and not args.verbose:
             return
         print(
-            "  attempt %d  difficulty %.4f  %.2f s  %s"
+            "  attempt %d  %s  difficulty %.4f  %.2f s  %s"
             % (
                 attempts,
+                structure.label,
                 candidate.difficulty,
                 candidate.seconds,
                 "-> bin %d" % index if index is not None else "rejected",
@@ -1077,9 +1550,15 @@ def _study(args):
         )
 
     run = build_suite(
-        random.Random(args.seed + 1), edges, quotas, args.suite_cap, suite_trace
+        random.Random(args.seed + 1),
+        strata,
+        edges,
+        quotas,
+        args.suite_cap,
+        suite_trace,
     )
     short = report_suite(run)
+    report_crossing(run)
 
     if args.suite_out and not run.accepted_count:
         # Every bin came up short, which the report above has already said. A
@@ -1102,7 +1581,7 @@ def _study(args):
         )
     if args.record_out:
         with open(args.record_out, "w") as handle:
-            json.dump(_record(prior, run, timing, args), handle, indent=1)
+            json.dump(_record(priors, run, timing, args), handle, indent=1)
         print("  wrote the measurements to %s" % args.record_out)
 
     return 1 if short else 0
@@ -1326,6 +1805,78 @@ def _stale_artifact_fixtures():
             yield description, artifact_path
 
 
+def _structure_complaints():
+    """A puzzle drawn under every reachable structure, held to what it names.
+
+    ``--suite-plays`` and ``--opponent-mix`` are built into a candidate rather
+    than rejected for, so nothing downstream reads them back: a suite whose
+    draws had stopped obeying either one would still be written, still be
+    stamped with the arguments that were asked for, and still pass every other
+    check in this module, while holding puzzles that satisfy neither. This is
+    what would notice.
+
+    The play count is recounted with ``prep.count_plays`` on the drawn puzzle,
+    opponent and all. That is the claim ``action_space_table`` rests on and
+    cannot check for itself: it probes each shop and gold against an empty
+    opponent, so a recount against a real one is the evidence that the agent's
+    action space is settled by its own shop and gold alone. Counting resolves no
+    battles, so even the half-million-play stratum costs under a second and
+    every reachable count is checked rather than a sample of them.
+
+    The mix cycles rather than crossing, because the two constraints are built
+    by separate code paths with no argument in common: the mix settles the
+    opponent's shop, gold and queue and the play count settles the agent's shop
+    and gold, so every mix and every count is exercised without paying for the
+    product of the two.
+
+    Yields ``(what was checked, what is wrong or None)``.
+    """
+    rng = random.Random(4)
+    mixes = [parse_mix(text) for text in ("A", "D,D,D", "A,B,C,D", "A,A,B,C,D")]
+    wrong_plays = []
+    wrong_mix = []
+    unlanded = []
+    for index, plays in enumerate(action_space_table()):
+        mix = mixes[index % len(mixes)]
+        structure = Structure(
+            plays, tuple(engine.label_to_type(label) for label in mix)
+        )
+        puzzle = random_puzzle(rng, "structured%d" % index, structure)
+        counted = prep.count_plays(puzzle)
+        if counted != plays:
+            wrong_plays.append(
+                "%s was asked for %d legal plays and has %d" % (puzzle.id, plays, counted)
+            )
+        fielded = tuple(
+            sorted(
+                engine.TYPE_LABELS[placement.unit_type]
+                for placement in puzzle.opponent_placements
+            )
+        )
+        if fielded != mix:
+            wrong_mix.append(
+                "%s was asked to field %s and fields %s"
+                % (puzzle.id, "/".join(mix), "/".join(fielded) or "nothing")
+            )
+        try:
+            prep.check_queue_lands(puzzle)
+        except prep.QueueDoesNotLand as error:
+            unlanded.append("%s: %s" % (puzzle.id, error))
+
+    yield (
+        "a puzzle drawn under an action-space target has that many legal plays",
+        None if not wrong_plays else "; ".join(wrong_plays),
+    )
+    yield (
+        "a puzzle drawn under an opponent mix fields exactly that mix",
+        None if not wrong_mix else "; ".join(wrong_mix),
+    )
+    yield (
+        "a constrained draw still lands its whole queue",
+        None if not unlanded else "; ".join(unlanded),
+    )
+
+
 def _stamp_complaints():
     """A suite this module writes, and what its stamp fails to say, if anything.
 
@@ -1366,6 +1917,8 @@ def _stamp_complaints():
             "--targets", "0.2,0.8",
             "--suite-edges", "0.1,0.6,0.9",
             "--suite-size", "2",
+            "--suite-plays", "1080",
+            "--opponent-mix", "A,D",
             "--suite-cap", "9",
         ]
     )
@@ -1398,7 +1951,16 @@ def _stamp_complaints():
             ),
         )
     )
-    run = SuiteRun([0.1, 0.6, 0.9], [1, 1], [[candidate], []], [1, None], 1, 0, 0.0)
+    run = SuiteRun(
+        structures(args),
+        [0.1, 0.6, 0.9],
+        [[1, 1]],
+        [[[candidate], []]],
+        [[1, None]],
+        [1],
+        0,
+        0.0,
+    )
 
     with tempfile.TemporaryDirectory() as directory:
         path = Path(directory) / "stamped_suite.json"
@@ -1472,9 +2034,13 @@ def _self_check(args):
     written, the suite or the oracle behind it moves, and
     ``analysis.load_analysis`` must refuse to hand the numbers back.
 
-    The stamp fixture is a fourth thing rather than a guard: it writes a suite
-    and reads back what the file says produced it. ``_stamp_complaints`` holds
-    the reason.
+    The structure fixtures are a fourth thing rather than a guard: they draw a
+    puzzle under each action-space target and opponent mix and hold it to what
+    was asked for, which nothing else in the module reads back.
+    ``_structure_complaints`` holds the reason.
+
+    The stamp fixture is a fifth: it writes a suite and reads back what the file
+    says produced it. ``_stamp_complaints`` holds the reason.
 
     Any suite may be passed, and a legal one passes whatever its opponents
     queue, including nothing at all.
@@ -1536,6 +2102,13 @@ def _self_check(args):
             print("GUARD DID NOT FIRE on %s, %s" % (description, path))
             failed = True
 
+    for description, complaint in _structure_complaints():
+        if complaint is None:
+            print("a constrained draw holds: %s" % description)
+        else:
+            print("A CONSTRAINED DRAW DOES NOT HOLD %s: %s" % (description, complaint))
+            failed = True
+
     for description, complaint in _stamp_complaints():
         if complaint is None:
             print("a written suite holds: %s" % description)
@@ -1582,6 +2155,26 @@ def build_parser():
         "0,0.006,0.012,0.022,0.038,0.06. The only way to ask for a band the "
         "prior did not reach, or for bins of uneven width. Bins the cap could "
         "not fill are reported unfilled, not widened",
+    )
+    study.add_argument(
+        "--suite-plays",
+        type=parse_plays,
+        default=None,
+        help="action-space targets, comma separated, as exact counts of legal "
+        "agent plays, as in 1080,29160. Each is a stratum drawn and reported "
+        "separately and crossed against every difficulty bin, which is what "
+        "varies difficulty and action-space size independently rather than "
+        "together. Without it the agent's shop and gold are drawn at random and "
+        "the action space is whatever they give",
+    )
+    study.add_argument(
+        "--opponent-mix",
+        type=parse_mix,
+        default=None,
+        help="the units every generated opponent fields, comma separated, as in "
+        "A,B,C,D. Held identical in every puzzle of every stratum, so no unit "
+        "type's share can move with difficulty. Without it the opponent's queue "
+        "is drawn at random and its mix is whatever the draw gives",
     )
     study.add_argument(
         "--suite-cap", type=int, default=300, help="enumerations before the suite gives up"

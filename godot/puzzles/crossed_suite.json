@@ -1,0 +1,410 @@
+{
+  "bin_edges": [
+    0.02,
+    0.2,
+    0.5
+  ],
+  "provenance": {
+    "command": [
+      "oracle/generate.py",
+      "study",
+      "--seed",
+      "20260911",
+      "--sample",
+      "8",
+      "--suite-plays",
+      "3240,29160,174960,524880",
+      "--opponent-mix",
+      "A,B,C,D",
+      "--suite-edges",
+      "0.02,0.20,0.50",
+      "--suite-size",
+      "8",
+      "--suite-cap",
+      "80",
+      "--suite-out",
+      "godot/puzzles/crossed_suite.json",
+      "--record-out",
+      "/tmp/crossed_record.json"
+    ],
+    "parameters": {
+      "seed": 20260911,
+      "sample": 8,
+      "band": 0.025,
+      "targets": [
+        0.05,
+        0.15,
+        0.3,
+        0.5,
+        0.7,
+        0.9
+      ],
+      "suite_size": 8,
+      "suite_bins": null,
+      "suite_edges": [
+        0.02,
+        0.2,
+        0.5
+      ],
+      "suite_plays": [
+        3240,
+        29160,
+        174960,
+        524880
+      ],
+      "opponent_mix": [
+        "A",
+        "B",
+        "C",
+        "D"
+      ],
+      "suite_cap": 80
+    }
+  },
+  "puzzles": [
+    {
+      "id": "gen10",
+      "difficulty": 1,
+      "tier": 1,
+      "llm_shop": [
+        "A",
+        "B",
+        "C"
+      ],
+      "llm_gold": 5,
+      "opponent_shop": [
+        "A",
+        "B",
+        "C",
+        "D"
+      ],
+      "opponent_gold": 6,
+      "opponent_placements": [
+        {
+          "type": "C",
+          "row": 2,
+          "col": 1
+        },
+        {
+          "type": "A",
+          "row": 3,
+          "col": 2
+        },
+        {
+          "type": "B",
+          "row": 2,
+          "col": 0
+        },
+        {
+          "type": "D",
+          "row": 3,
+          "col": 0
+        }
+      ],
+      "measured_difficulty": 0.4163180155464106,
+      "play_count": 174960,
+      "win_count": 72839
+    },
+    {
+      "id": "gen4",
+      "difficulty": 2,
+      "tier": 1,
+      "llm_shop": [
+        "A",
+        "B",
+        "C"
+      ],
+      "llm_gold": 3,
+      "opponent_shop": [
+        "A",
+        "B",
+        "C",
+        "D"
+      ],
+      "opponent_gold": 5,
+      "opponent_placements": [
+        {
+          "type": "B",
+          "row": 3,
+          "col": 0
+        },
+        {
+          "type": "A",
+          "row": 3,
+          "col": 2
+        },
+        {
+          "type": "D",
+          "row": 2,
+          "col": 0
+        },
+        {
+          "type": "C",
+          "row": 3,
+          "col": 1
+        }
+      ],
+      "measured_difficulty": 0.21481481481481482,
+      "play_count": 3240,
+      "win_count": 696
+    },
+    {
+      "id": "gen15",
+      "difficulty": 3,
+      "tier": 1,
+      "llm_shop": [
+        "A",
+        "B",
+        "C"
+      ],
+      "llm_gold": 6,
+      "opponent_shop": [
+        "A",
+        "B",
+        "C",
+        "D"
+      ],
+      "opponent_gold": 6,
+      "opponent_placements": [
+        {
+          "type": "A",
+          "row": 2,
+          "col": 1
+        },
+        {
+          "type": "C",
+          "row": 2,
+          "col": 2
+        },
+        {
+          "type": "B",
+          "row": 3,
+          "col": 1
+        },
+        {
+          "type": "D",
+          "row": 3,
+          "col": 0
+        }
+      ],
+      "measured_difficulty": 0.21460714830056393,
+      "play_count": 524880,
+      "win_count": 112643
+    },
+    {
+      "id": "gen1",
+      "difficulty": 4,
+      "tier": 1,
+      "llm_shop": [
+        "A",
+        "B",
+        "C"
+      ],
+      "llm_gold": 4,
+      "opponent_shop": [
+        "A",
+        "B",
+        "C",
+        "D"
+      ],
+      "opponent_gold": 5,
+      "opponent_placements": [
+        {
+          "type": "A",
+          "row": 2,
+          "col": 0
+        },
+        {
+          "type": "B",
+          "row": 3,
+          "col": 0
+        },
+        {
+          "type": "D",
+          "row": 3,
+          "col": 2
+        },
+        {
+          "type": "C",
+          "row": 2,
+          "col": 1
+        }
+      ],
+      "measured_difficulty": 0.20953360768175583,
+      "play_count": 29160,
+      "win_count": 6110
+    },
+    {
+      "id": "gen9",
+      "difficulty": 5,
+      "tier": 2,
+      "llm_shop": [
+        "A",
+        "B",
+        "C"
+      ],
+      "llm_gold": 4,
+      "opponent_shop": [
+        "A",
+        "B",
+        "C",
+        "D"
+      ],
+      "opponent_gold": 6,
+      "opponent_placements": [
+        {
+          "type": "D",
+          "row": 2,
+          "col": 0
+        },
+        {
+          "type": "C",
+          "row": 3,
+          "col": 1
+        },
+        {
+          "type": "B",
+          "row": 3,
+          "col": 0
+        },
+        {
+          "type": "A",
+          "row": 2,
+          "col": 1
+        }
+      ],
+      "measured_difficulty": 0.11574074074074074,
+      "play_count": 29160,
+      "win_count": 3375
+    },
+    {
+      "id": "gen3",
+      "difficulty": 6,
+      "tier": 2,
+      "llm_shop": [
+        "A",
+        "B",
+        "C"
+      ],
+      "llm_gold": 6,
+      "opponent_shop": [
+        "A",
+        "B",
+        "C",
+        "D"
+      ],
+      "opponent_gold": 5,
+      "opponent_placements": [
+        {
+          "type": "D",
+          "row": 3,
+          "col": 1
+        },
+        {
+          "type": "A",
+          "row": 3,
+          "col": 0
+        },
+        {
+          "type": "C",
+          "row": 2,
+          "col": 0
+        },
+        {
+          "type": "B",
+          "row": 2,
+          "col": 1
+        }
+      ],
+      "measured_difficulty": 0.0754762993446121,
+      "play_count": 524880,
+      "win_count": 39616
+    },
+    {
+      "id": "gen12",
+      "difficulty": 7,
+      "tier": 2,
+      "llm_shop": [
+        "A",
+        "B",
+        "C"
+      ],
+      "llm_gold": 3,
+      "opponent_shop": [
+        "A",
+        "B",
+        "C",
+        "D"
+      ],
+      "opponent_gold": 6,
+      "opponent_placements": [
+        {
+          "type": "C",
+          "row": 2,
+          "col": 0
+        },
+        {
+          "type": "B",
+          "row": 3,
+          "col": 0
+        },
+        {
+          "type": "D",
+          "row": 2,
+          "col": 2
+        },
+        {
+          "type": "A",
+          "row": 3,
+          "col": 1
+        }
+      ],
+      "measured_difficulty": 0.041666666666666664,
+      "play_count": 3240,
+      "win_count": 135
+    },
+    {
+      "id": "gen6",
+      "difficulty": 8,
+      "tier": 2,
+      "llm_shop": [
+        "A",
+        "B",
+        "C"
+      ],
+      "llm_gold": 5,
+      "opponent_shop": [
+        "A",
+        "B",
+        "C",
+        "D"
+      ],
+      "opponent_gold": 6,
+      "opponent_placements": [
+        {
+          "type": "C",
+          "row": 3,
+          "col": 1
+        },
+        {
+          "type": "B",
+          "row": 2,
+          "col": 0
+        },
+        {
+          "type": "D",
+          "row": 3,
+          "col": 2
+        },
+        {
+          "type": "A",
+          "row": 2,
+          "col": 2
+        }
+      ],
+      "measured_difficulty": 0.04068930041152263,
+      "play_count": 174960,
+      "win_count": 7119
+    }
+  ]
+}
