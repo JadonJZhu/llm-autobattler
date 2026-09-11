@@ -38,6 +38,11 @@ var _current_game_score_data: Dictionary = {}
 var _game_history: Array[Dictionary] = []
 var _reasoning_history: Array[String] = []
 var _current_game_reasoning: Array[String] = []
+## How many of the finalized games in _game_history a placement prompt may be
+## built from. The reflection channel reads _game_history directly and is not
+## bounded by this, which is what lets attempts be independent of each other's
+## replays while reflection still has something to reflect on.
+var _placement_lookback_games: int = 0
 
 
 func _ready() -> void:
@@ -75,7 +80,8 @@ func record_model(model_identity: String) -> void:
 
 
 func begin_puzzle_attempt(puzzle_id: String, config_label: String,
-		attempt_number: int, plays_every_attempt: bool) -> void:
+		attempt_number: int, plays_every_attempt: bool,
+		carries_attempt_history: bool) -> void:
 	## Names the puzzle attempt every following entry belongs to, and marks its
 	## boundary in the log.
 	##
@@ -101,12 +107,31 @@ func begin_puzzle_attempt(puzzle_id: String, config_label: String,
 	## the same value, and a reader of the game log has that file neither by name
 	## nor by path, so recording it in only one of them leaves the reader that
 	## draws per-attempt statistics unable to say what its own rows are.
+	##
+	## carries_attempt_history is the other thing that decides what a count of
+	## attempts means. False is one independent trial: this attempt's placement
+	## prompts carry no replay of any earlier attempt of the same puzzle, so with
+	## reflection off three wins out of ten is ten independent draws. With
+	## reflection on they are independent in what they replay only, because
+	## reflection keeps a look-back across attempts and its text reaches the
+	## placement prompt. True is the regime where the attempts saw each other's
+	## replays outright, under which the same three wins are one sequence the
+	## agent could have learned along. It is stamped on every entry for the same
+	## reason the stopping rule is: a reader of this file has no other file to
+	## join against, and the two regimes produce numbers that do not mean the
+	## same thing.
+	if not carries_attempt_history:
+		# A new independent trial. The replays stay in _game_history, because the
+		# reflection channel keeps its own look-back across attempts; only the
+		# window the placement prompt is built from closes here.
+		_placement_lookback_games = 0
 	_attempt_identity = {
 		"play_mode": "puzzle",
 		"puzzle_id": puzzle_id,
 		"config": config_label,
 		"attempt": attempt_number,
 		"play_all_attempts": plays_every_attempt,
+		"carry_attempt_history": carries_attempt_history,
 	}
 	log_turn(0, {"event": "attempt_start"})
 
@@ -216,6 +241,7 @@ func finalize_game_replay(outcome: String) -> void:
 	_game_history.append(_previous_game_replay.duplicate())
 	if _game_history.size() > MAX_GAME_HISTORY:
 		_game_history.pop_front()
+	_placement_lookback_games += 1
 
 	# Store accumulated reasoning for this game and reset
 	if not _current_game_reasoning.is_empty():
@@ -236,12 +262,21 @@ func get_game_history(count: int = -1) -> Array[Dictionary]:
 	return _game_history.slice(_game_history.size() - count) as Array[Dictionary]
 
 
+func get_placement_history() -> Array[Dictionary]:
+	## The replays a placement prompt may be built from, which is deliberately a
+	## narrower window than the one the reflection channel reads. Under
+	## independent attempts an attempt's first placement sees nothing at all,
+	## because the attempt it follows is outside the window.
+	return get_game_history(_placement_lookback_games)
+
+
 func get_game_count() -> int:
 	return _game_history.size()
 
 
 func clear_history() -> void:
 	_game_history.clear()
+	_placement_lookback_games = 0
 	_reasoning_history.clear()
 	_current_game_reasoning.clear()
 	_previous_game_replay = {}

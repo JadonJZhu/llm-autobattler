@@ -17,6 +17,22 @@ var max_attempts: int = 10
 ## failures. Any per-attempt statistic drawn across puzzles then reads a slope
 ## that the stopping rule put there.
 var play_all_attempts: bool = false
+## Which of the two attempt regimes this puzzle is played under.
+##
+## False makes the attempts independent trials: no replay of an earlier attempt
+## reaches a later attempt's placement prompt, so under a reflection-off config
+## wins out of N is N independent draws. Reflection is the stated exception and
+## it is not independent: it keeps its own look-back across attempts on purpose,
+## and its text goes into the placement system prompt, so under a
+## reflection-on config a later attempt is carrying conclusions drawn from
+## earlier ones. Those attempts are independent in what they replay and not in
+## what reflection made of it, which is what leaves a reflection-on against
+## reflection-off comparison something to measure.
+##
+## True makes a later attempt's placement prompt carry the earlier attempts'
+## battle replays outright. That is the regime the published attempt counts were
+## measured under and the only way to reproduce them.
+var carry_attempt_history: bool = false
 var mode_config: LlmModeConfig
 var scenario
 
@@ -26,11 +42,13 @@ var _remaining_opponent_placements: Array[Dictionary] = []
 
 
 func start_puzzle(next_scenario, next_mode_config: LlmModeConfig,
-		attempt_limit: int = 10, play_every_attempt: bool = false) -> void:
+		attempt_limit: int = 10, play_every_attempt: bool = false,
+		carry_history_across_attempts: bool = false) -> void:
 	scenario = next_scenario
 	mode_config = next_mode_config
 	max_attempts = maxi(1, attempt_limit)
 	play_all_attempts = play_every_attempt
+	carry_attempt_history = carry_history_across_attempts
 	current_attempt = 1
 	_attempt_results.clear()
 	_is_running = true
@@ -111,12 +129,15 @@ func record_attempt_result(winner, score_data: Dictionary, battle_step_count: in
 
 func _begin_attempt_logging() -> void:
 	## This runner holds the only copy of the three values that name an attempt
-	## and of the stopping rule it is played under, so it is the only place that
+	## and of the two regimes it is played under, so it is the only place that
 	## can put them in the game log. It runs on every attempt, not just the first,
 	## because attempt_started is emitted only for attempt 1 and the controller
-	## restarts the rest directly.
+	## restarts the rest directly. Opening the attempt is also what closes the
+	## previous attempt's replays out of the placement prompt, so this has to run
+	## before the next attempt places anything.
 	GameLogger.begin_puzzle_attempt(
-		scenario.id, mode_config.get_label(), current_attempt, play_all_attempts
+		scenario.id, mode_config.get_label(), current_attempt, play_all_attempts,
+		carry_attempt_history
 	)
 
 

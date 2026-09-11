@@ -142,3 +142,152 @@ func test_the_run_the_scene_starts_names_what_produced_it_in_the_log():
 		producers[entry.get("model", ABSENT)] = true
 	assert_eq(producers.keys(), [LlmHttpBase.NO_MODEL],
 		"every entry a real run logged has to name that run's producer, and this run had none")
+
+
+# =============================================================================
+# A later attempt is asked from an empty window
+# =============================================================================
+#
+# Wins out of N is N independent draws only if the prompt attempt k+1 answers
+# carries nothing of attempt k. The controller settles that in exactly one
+# place, by choosing which of the logger's two windows it hands the client, so
+# these drive that choice through the real client rather than reading back the
+# window function the test would have picked itself.
+#
+# The chain is the real one: a battle ends, the runner opens the next attempt,
+# the controller restarts into it and asks for a placement. The client is given
+# a key, so it takes the model path instead of the fallback, and a request node
+# that is left outside the scene tree, so every send is refused before a socket
+# is opened. Nothing leaves this machine and no API is reached. Each refusal
+# raises an error, and the tests account for those rather than leave them to
+# fail on something that is not about the prompt.
+
+const NOT_A_KEY: String = "no request built with this key is ever sent"
+const ATTEMPT_ONE_BOARD: String = "ATTEMPT-ONE-BOARD-MARKER"
+const REFUSED_SEND: String = "ERR_UNCONFIGURED"
+const REFUSED_SEND_REPORTED: String = "HTTPRequest.request() failed"
+
+
+class CapturingPromptBuilder:
+	extends LlmPromptBuilder
+	## Records the replay window behind every placement prompt it is asked for.
+	var windows: Array[Array] = []
+
+	func build_user_message(board: GameBoard, llm_shop: Shop, enemy_shop: Shop,
+			turn_number: int, game_history: Array[Dictionary],
+			config: LlmModeConfig) -> String:
+		windows.append(game_history.duplicate())
+		return super.build_user_message(
+			board, llm_shop, enemy_shop, turn_number, game_history, config
+		)
+
+
+var _builder: CapturingPromptBuilder
+var _real_http_request: HTTPRequest
+var _client_was_borrowed: bool = false
+
+
+func after_each():
+	if not _client_was_borrowed:
+		return
+	LlmClient._api_key = ""
+	LlmClient._is_requesting = false
+	LlmClient._http_request = _real_http_request
+	LlmClient.set_prompt_builder(LlmPromptBuilder.new())
+	_client_was_borrowed = false
+
+
+func _make_the_client_build_prompts_it_cannot_send() -> void:
+	_builder = CapturingPromptBuilder.new()
+	LlmClient.set_prompt_builder(_builder)
+	LlmClient._api_key = NOT_A_KEY
+	_real_http_request = LlmClient._http_request
+	LlmClient._http_request = autofree(HTTPRequest.new())
+	_client_was_borrowed = true
+
+
+func _account_for_the_refused_sends() -> void:
+	## Every error one of these tests raises is a send the unparented request
+	## node refused, plus the controller reporting it. They are the price of
+	## driving the model path offline and they say nothing about the prompt, so
+	## they are accounted for here and anything else still fails the test.
+	var errors: Array = get_errors()
+	assert_false(errors.is_empty(), "the client should have tried to send")
+	for err in errors:
+		if err.contains_text(REFUSED_SEND) or err.contains_text(REFUSED_SEND_REPORTED):
+			err.handled = true
+		else:
+			fail_test("an error that is not a refused send: %s" % err.to_s())
+
+
+func _lose_attempt_one_of_a_puzzle(carry_attempt_history: bool) -> int:
+	## Plays a three-attempt puzzle as far as losing attempt 1, which leaves the
+	## controller opened into attempt 2 and already asked for its first
+	## placement. Returns the index in the builder's windows at which attempt 2's
+	## prompts begin.
+	var config := LlmModeConfig.new()
+	config.instructions_enabled = false
+	config.examples_enabled = false
+	config.reflection_enabled = false
+	var scenario := PuzzleScenario.new()
+	scenario.id = "independence"
+	scenario.difficulty = 1
+	scenario.llm_shop_types = [UnitData.UnitType.A, UnitData.UnitType.B]
+	scenario.opponent_shop_types = [UnitData.UnitType.A, UnitData.UnitType.B]
+
+	_controller._mode_config = config
+	LlmClient.set_mode_config(config)
+	_controller._puzzle_mode_enabled = true
+	_controller._active_puzzle_scenario = scenario
+	GameLogger.clear_history()
+	_controller._puzzle_runner.start_puzzle(scenario, config, 3, true, carry_attempt_history)
+
+	var windows_before_attempt_two: int = _builder.windows.size()
+	GameLogger.record_battle_start(ATTEMPT_ONE_BOARD)
+	_controller.turn_manager._end_game({
+		"is_finished": true,
+		"winner": UnitData.Owner.HUMAN,
+		"llm_score": 0,
+		"human_score": 3,
+		"llm_remaining": 0,
+		"human_remaining": 2,
+		"llm_escaped": 0,
+		"human_escaped": 0,
+	})
+	return windows_before_attempt_two
+
+
+func test_a_later_independent_attempt_is_asked_from_an_empty_window():
+	_make_the_client_build_prompts_it_cannot_send()
+
+	var first: int = _lose_attempt_one_of_a_puzzle(false)
+	_account_for_the_refused_sends()
+
+	assert_eq(_controller._puzzle_runner.current_attempt, 2,
+		"the lost attempt should have opened attempt 2")
+	assert_gt(_builder.windows.size(), first,
+		"attempt 2 should have asked the model for a placement")
+	if _builder.windows.size() <= first:
+		return
+	assert_eq(_builder.windows[first].size(), 0,
+		"attempt 2's placement must be built from a window holding no earlier attempt")
+
+
+func test_a_later_carrying_attempt_is_asked_from_the_earlier_attempts_replay():
+	## The counterpart, and what stops the assertion above from passing on a
+	## window that comes back empty whatever the regime. This is the regime the
+	## published attempt counts were measured under.
+	_make_the_client_build_prompts_it_cannot_send()
+
+	var first: int = _lose_attempt_one_of_a_puzzle(true)
+	_account_for_the_refused_sends()
+
+	assert_gt(_builder.windows.size(), first,
+		"attempt 2 should have asked the model for a placement")
+	if _builder.windows.size() <= first:
+		return
+	assert_eq(_builder.windows[first].size(), 1,
+		"the carry-history regime must still show attempt 2 what attempt 1 played")
+	if _builder.windows[first].is_empty():
+		return
+	assert_eq(str(_builder.windows[first][0].get("start_board", "")), ATTEMPT_ONE_BOARD)

@@ -96,7 +96,7 @@ func test_battle_start_clears_the_previous_battles_scores():
 # =============================================================================
 
 func test_prep_placement_names_its_puzzle_config_and_attempt():
-	GameLogger.begin_puzzle_attempt("7", "I1_E0_R1", 3, false)
+	GameLogger.begin_puzzle_attempt("7", "I1_E0_R1", 3, false, false)
 	GameLogger.log_llm_prep_placement(1, "B", Vector2i(0, 2), 2, LogConstants.Chooser.MODEL)
 	var entry: Dictionary = _last_entry()
 	assert_eq(entry.get("play_mode", ABSENT), "puzzle")
@@ -109,7 +109,7 @@ func test_prep_placement_names_its_puzzle_config_and_attempt():
 
 func test_attempt_start_entry_marks_the_boundary():
 	var mark: int = _mark()
-	GameLogger.begin_puzzle_attempt("2", "I0_E0_R0", 1, false)
+	GameLogger.begin_puzzle_attempt("2", "I0_E0_R0", 1, false, false)
 	var entries: Array = _entries_since(mark)
 	assert_eq(entries.size(), 1, "beginning an attempt should log one boundary entry")
 	if entries.size() != 1:
@@ -121,7 +121,7 @@ func test_attempt_start_entry_marks_the_boundary():
 
 
 func test_battle_and_game_over_entries_name_the_attempt():
-	GameLogger.begin_puzzle_attempt("5", "I1_E1_R1", 2, false)
+	GameLogger.begin_puzzle_attempt("5", "I1_E1_R1", 2, false, false)
 	GameLogger.log_battle_step(1, "LLM", "unit moved")
 	var battle_entry: Dictionary = _last_entry()
 	_end_a_game(SAMPLE_SCORE, "LLM", 8, 10)
@@ -133,16 +133,16 @@ func test_battle_and_game_over_entries_name_the_attempt():
 
 
 func test_beginning_the_next_attempt_changes_the_identity():
-	GameLogger.begin_puzzle_attempt("5", "I1_E1_R1", 1, false)
+	GameLogger.begin_puzzle_attempt("5", "I1_E1_R1", 1, false, false)
 	GameLogger.log_llm_prep_placement(1, "A", Vector2i(0, 0), 2, LogConstants.Chooser.MODEL)
 	assert_eq(_last_entry().get("attempt", ABSENT), 1)
-	GameLogger.begin_puzzle_attempt("5", "I1_E1_R1", 2, false)
+	GameLogger.begin_puzzle_attempt("5", "I1_E1_R1", 2, false, false)
 	GameLogger.log_llm_prep_placement(1, "A", Vector2i(0, 0), 2, LogConstants.Chooser.MODEL)
 	assert_eq(_last_entry().get("attempt", ABSENT), 2)
 
 
 func test_free_play_entries_say_so_rather_than_omitting_identity():
-	GameLogger.begin_puzzle_attempt("5", "I1_E1_R1", 1, false)
+	GameLogger.begin_puzzle_attempt("5", "I1_E1_R1", 1, false, false)
 	GameLogger.begin_free_play_game()
 	GameLogger.log_llm_prep_placement(1, "C", Vector2i(1, 1), 1, LogConstants.Chooser.MODEL)
 	var entry: Dictionary = _last_entry()
@@ -157,16 +157,36 @@ func test_entries_name_the_stopping_rule_the_attempt_was_played_under():
 	## A count of attempts means one thing when a puzzle stops at its first solve
 	## and another when it plays its whole cap, so an entry that does not say
 	## which cannot be counted.
-	GameLogger.begin_puzzle_attempt("6", "I0_E0_R0", 2, true)
+	GameLogger.begin_puzzle_attempt("6", "I0_E0_R0", 2, true, false)
 	GameLogger.log_llm_prep_placement(1, "A", Vector2i(0, 0), 2, LogConstants.Chooser.MODEL)
 	assert_eq(_last_entry().get("play_all_attempts", ABSENT), true)
-	GameLogger.begin_puzzle_attempt("6", "I0_E0_R0", 3, false)
+	GameLogger.begin_puzzle_attempt("6", "I0_E0_R0", 3, false, false)
 	GameLogger.log_battle_step(1, "LLM", "unit moved")
 	assert_eq(_last_entry().get("play_all_attempts", ABSENT), false)
 
 
+func test_entries_name_the_attempt_regime_they_were_played_under():
+	## Wins out of ten means ten independent draws under one regime and one
+	## sequence under the other, so an entry that does not say which cannot be
+	## counted alongside entries from the other.
+	GameLogger.begin_puzzle_attempt("6", "I0_E0_R0", 2, false, true)
+	GameLogger.log_llm_prep_placement(1, "A", Vector2i(0, 0), 2, LogConstants.Chooser.MODEL)
+	assert_eq(_last_entry().get("carry_attempt_history", ABSENT), true)
+	GameLogger.begin_puzzle_attempt("6", "I0_E0_R0", 3, false, false)
+	GameLogger.log_battle_step(1, "LLM", "unit moved")
+	assert_eq(_last_entry().get("carry_attempt_history", ABSENT), false)
+
+
+func test_free_play_entries_claim_no_attempt_regime():
+	GameLogger.begin_puzzle_attempt("6", "I0_E0_R0", 1, false, true)
+	GameLogger.begin_free_play_game()
+	GameLogger.log_llm_prep_placement(1, "A", Vector2i(0, 0), 2, LogConstants.Chooser.MODEL)
+	assert_false(_last_entry().has("carry_attempt_history"),
+		"a free-play entry belongs to no attempt and so to no attempt regime")
+
+
 func test_free_play_entries_claim_no_stopping_rule():
-	GameLogger.begin_puzzle_attempt("6", "I0_E0_R0", 1, true)
+	GameLogger.begin_puzzle_attempt("6", "I0_E0_R0", 1, true, false)
 	GameLogger.begin_free_play_game()
 	GameLogger.log_llm_prep_placement(1, "A", Vector2i(0, 0), 2, LogConstants.Chooser.MODEL)
 	assert_false(_last_entry().has("play_all_attempts"),
@@ -174,7 +194,7 @@ func test_free_play_entries_claim_no_stopping_rule():
 
 
 func test_a_logged_entry_cannot_overwrite_its_own_identity():
-	GameLogger.begin_puzzle_attempt("9", "I0_E0_R0", 4, false)
+	GameLogger.begin_puzzle_attempt("9", "I0_E0_R0", 4, false, false)
 	GameLogger.log_turn(1, {"phase": "prep", "puzzle_id": "impostor", "attempt": 99})
 	var entry: Dictionary = _last_entry()
 	assert_eq(entry.get("puzzle_id", ABSENT), "9")
@@ -187,7 +207,7 @@ func test_a_logged_entry_cannot_overwrite_its_own_identity():
 
 func test_prep_entries_of_an_attempt_can_be_counted_against_its_stated_total():
 	var mark: int = _mark()
-	GameLogger.begin_puzzle_attempt("3", "I0_E0_R0", 1, false)
+	GameLogger.begin_puzzle_attempt("3", "I0_E0_R0", 1, false, false)
 	GameLogger.log_llm_prep_placement(1, "A", Vector2i(0, 0), 2, LogConstants.Chooser.MODEL)
 	GameLogger.log_human_prep_placement(2, "A", Vector2i(2, 0), 2)
 	GameLogger.log_llm_prep_placement(3, "B", Vector2i(1, 1), 1, LogConstants.Chooser.MODEL)
@@ -234,7 +254,7 @@ func test_a_reader_can_split_an_attempts_llm_placements_by_chooser():
 	## model actually made. A reader gets that only if every LLM prep entry
 	## states a chooser, so this counts the ones that do against the ones there are.
 	var mark: int = _mark()
-	GameLogger.begin_puzzle_attempt("3", "I0_E0_R0", 1, false)
+	GameLogger.begin_puzzle_attempt("3", "I0_E0_R0", 1, false, false)
 	GameLogger.log_llm_prep_placement(1, "A", Vector2i(0, 0), 2, LogConstants.Chooser.MODEL)
 	GameLogger.log_human_prep_placement(2, "A", Vector2i(2, 0), 2)
 	GameLogger.log_llm_prep_placement(3, "B", Vector2i(0, 1), 1, LogConstants.Chooser.FALLBACK)
@@ -309,7 +329,7 @@ func test_every_entry_of_a_run_names_the_model_it_recorded():
 	## able to say what made it without joining it to anything else.
 	var mark: int = _mark()
 	GameLogger.record_model("some-model-2026")
-	GameLogger.begin_puzzle_attempt("4", "I1_E1_R1", 1, false)
+	GameLogger.begin_puzzle_attempt("4", "I1_E1_R1", 1, false, false)
 	GameLogger.log_llm_prep_placement(1, "A", Vector2i(0, 0), 2, LogConstants.Chooser.MODEL)
 	GameLogger.log_human_prep_placement(2, "A", Vector2i(2, 0), 2)
 	GameLogger.log_battle_step(1, "LLM", "unit moved")
@@ -346,3 +366,63 @@ func test_a_run_that_named_no_model_claims_neither_a_model_nor_the_absence_of_on
 	assert_eq(stated, GameLogger.MODEL_UNRECORDED)
 	assert_ne(stated, LlmHttpBase.NO_MODEL,
 		"a run that said nothing is not a run that said no model was used")
+
+
+# =============================================================================
+# E. The placement window and the reflection window are not the same window
+# =============================================================================
+#
+# The placement prompt is built from one of these and the reflection client from
+# the other. Narrowing them together is the mistake that would make an R1
+# against R0 comparison measure nothing.
+
+
+func test_opening_an_independent_attempt_closes_the_earlier_replays_out():
+	GameLogger.clear_history()
+	GameLogger.begin_puzzle_attempt("8", "I0_E0_R0", 1, true, false)
+	_end_a_game(SAMPLE_SCORE, "LLM", 3, 6)
+	assert_eq(GameLogger.get_placement_history().size(), 1,
+		"a game an attempt finished is still inside that attempt's own window")
+	GameLogger.begin_puzzle_attempt("8", "I0_E0_R0", 2, true, false)
+	assert_eq(GameLogger.get_placement_history().size(), 0,
+		"attempt 2 must be able to see nothing of attempt 1")
+
+
+func test_opening_a_carrying_attempt_keeps_the_earlier_replays():
+	GameLogger.clear_history()
+	GameLogger.begin_puzzle_attempt("8", "I0_E0_R0", 1, true, true)
+	_end_a_game(SAMPLE_SCORE, "LLM", 3, 6)
+	GameLogger.begin_puzzle_attempt("8", "I0_E0_R0", 2, true, true)
+	assert_eq(GameLogger.get_placement_history().size(), 1,
+		"the carry-history regime is what the published attempt counts were measured under")
+
+
+func test_independent_attempts_do_not_narrow_the_reflection_window():
+	GameLogger.clear_history()
+	GameLogger.begin_puzzle_attempt("8", "I0_E0_R0", 1, true, false)
+	GameLogger.log_llm_reasoning("what attempt one was thinking")
+	_end_a_game(SAMPLE_SCORE, "LLM", 3, 6)
+	GameLogger.begin_puzzle_attempt("8", "I0_E0_R0", 2, true, false)
+	assert_eq(GameLogger.get_game_history().size(), 1,
+		"the replay of attempt 1 is still there for the reflection client")
+	assert_eq(GameLogger.get_recent_reasoning().size(), 1,
+		"the reasoning of attempt 1 is still there for the reflection client")
+
+
+func test_a_new_puzzle_empties_both_windows():
+	GameLogger.begin_puzzle_attempt("8", "I0_E0_R0", 1, true, true)
+	_end_a_game(SAMPLE_SCORE, "LLM", 3, 6)
+	GameLogger.clear_history()
+	assert_eq(GameLogger.get_placement_history().size(), 0)
+	assert_eq(GameLogger.get_game_history().size(), 0)
+
+
+func test_free_play_games_keep_accumulating_a_placement_window():
+	## Free play has no attempts to be independent of, and playing on across
+	## games is what it is for.
+	GameLogger.clear_history()
+	GameLogger.begin_free_play_game()
+	_end_a_game(SAMPLE_SCORE, "LLM", 3, 6)
+	GameLogger.begin_free_play_game()
+	_end_a_game(SAMPLE_SCORE, "Human", 3, 6)
+	assert_eq(GameLogger.get_placement_history().size(), 2)

@@ -48,6 +48,10 @@ var _ablation_retry_rng: RandomNumberGenerator = RandomNumberGenerator.new()
 var _ablation_retry_pending: bool = false
 var _cli_ablation_mode: bool = false
 var _cli_output_prefix: String = ""
+## The regime this run plays its puzzle attempts under, held here because it is
+## set once for a whole run and the ablation runner never needs it. See
+## PuzzleRunner.carry_attempt_history for what the two regimes are.
+var _carry_attempt_history: bool = false
 
 
 func _ready() -> void:
@@ -173,7 +177,7 @@ func _trigger_llm_turn() -> void:
 		shop_ui.update_status("LLM is thinking...")
 		LlmClient.request_llm_prep(
 			game_board, _llm_shop, _human_shop,
-			turn_manager.turn_number, GameLogger.get_game_history()
+			turn_manager.turn_number, GameLogger.get_placement_history()
 		)
 	else:
 		_apply_fallback_llm_prep()
@@ -478,7 +482,8 @@ func _setup_puzzle_system() -> void:
 
 func start_ablation(max_attempts_per_puzzle: int = 10,
 		puzzle_path: String = DEFAULT_PUZZLE_PATH, configs: Array = [],
-		play_all_attempts: bool = false) -> void:
+		play_all_attempts: bool = false,
+		carry_attempt_history: bool = false) -> void:
 	var puzzles: Array = _puzzle_loader.load_puzzles(puzzle_path)
 	if puzzles.is_empty():
 		shop_ui.update_status("No puzzles loaded. Check puzzle_suite.json.")
@@ -486,6 +491,7 @@ func start_ablation(max_attempts_per_puzzle: int = 10,
 
 	_mini_ablation_active = false
 	_puzzle_mode_enabled = true
+	_carry_attempt_history = carry_attempt_history
 	_ablation_api_error_count = 0
 	_ablation_retry_pending = false
 	turn_manager.set_autoplay(true)
@@ -500,7 +506,8 @@ func start_ablation(max_attempts_per_puzzle: int = 10,
 
 func start_mini_ablation(max_attempts_per_puzzle: int = 3,
 		puzzle_path: String = DEFAULT_PUZZLE_PATH, configs: Array = [],
-		play_all_attempts: bool = false) -> void:
+		play_all_attempts: bool = false,
+		carry_attempt_history: bool = false) -> void:
 	var puzzles: Array = _puzzle_loader.load_puzzles(puzzle_path)
 	if puzzles.is_empty():
 		shop_ui.update_status("No puzzles loaded. Check puzzle_suite.json.")
@@ -516,6 +523,7 @@ func start_mini_ablation(max_attempts_per_puzzle: int = 3,
 		mini_configs = configs
 	_mini_ablation_active = true
 	_puzzle_mode_enabled = true
+	_carry_attempt_history = carry_attempt_history
 	_ablation_api_error_count = 0
 	_ablation_retry_pending = false
 	turn_manager.set_autoplay(true)
@@ -549,7 +557,9 @@ func _on_ablation_puzzle_requested(config: LlmModeConfig, scenario,
 	LlmClient.set_reflection_feedback("")
 	_games_since_reflection = 0
 	_active_puzzle_scenario = scenario
-	_puzzle_runner.start_puzzle(scenario, config, max_attempts, play_all_attempts)
+	_puzzle_runner.start_puzzle(
+		scenario, config, max_attempts, play_all_attempts, _carry_attempt_history
+	)
 
 
 func _on_puzzle_attempt_started(scenario_id: String, attempt_number: int, max_attempts: int) -> void:
@@ -616,6 +626,11 @@ func _on_ablation_completed(results: Dictionary) -> void:
 	if filename_prefix.is_empty():
 		filename_prefix = "mini_ablation" if is_mini_run else "ablation"
 	var run_label: String = "Mini ablation" if is_mini_run else "Ablation"
+	# The regime the attempts were played under never reaches AblationRunner, so
+	# this is the only place that can put it in the results file, and the results
+	# file is where a pass rate is read from. Without it an "8 out of 10" in that
+	# file does not say whether it is ten independent draws or one sequence.
+	results["carry_attempt_history"] = _carry_attempt_history
 	var log_path: String = _puzzle_logger.save_ablation_results(results, filename_prefix)
 	# The run is over, so no later battle will end and flush the game log. A run
 	# that stopped part way through an attempt has that attempt only in memory
@@ -673,6 +688,7 @@ func _parse_cli_args() -> Dictionary:
 		"config": "",
 		"max_attempts": 10,
 		"all_attempts": false,
+		"carry_attempt_history": false,
 		"puzzle_path": DEFAULT_PUZZLE_PATH,
 		"output_prefix": "",
 	}
@@ -699,6 +715,8 @@ func _parse_cli_args() -> Dictionary:
 					i += 1
 			"--all-attempts":
 				parsed["all_attempts"] = true
+			"--carry-attempt-history":
+				parsed["carry_attempt_history"] = true
 			"--puzzle-path":
 				if i + 1 < args.size():
 					parsed["puzzle_path"] = String(args[i + 1]).strip_edges()
@@ -737,11 +755,16 @@ func _start_cli_ablation(cli_args: Dictionary) -> void:
 
 	var max_attempts: int = int(cli_args.get("max_attempts", 10))
 	var all_attempts: bool = bool(cli_args.get("all_attempts", false))
+	var carry_history: bool = bool(cli_args.get("carry_attempt_history", false))
 	var puzzle_path: String = str(cli_args.get("puzzle_path", DEFAULT_PUZZLE_PATH))
 	if run_mini:
-		start_mini_ablation(max_attempts, puzzle_path, filtered_configs, all_attempts)
+		start_mini_ablation(
+			max_attempts, puzzle_path, filtered_configs, all_attempts, carry_history
+		)
 	else:
-		start_ablation(max_attempts, puzzle_path, filtered_configs, all_attempts)
+		start_ablation(
+			max_attempts, puzzle_path, filtered_configs, all_attempts, carry_history
+		)
 
 	if not _is_ablation_running():
 		push_error("CLI ablation failed to start.")

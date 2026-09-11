@@ -28,14 +28,16 @@ func _make_scenario(scenario_id: String) -> PuzzleScenario:
 
 
 func _make_runner(scenario_id: String, attempt_limit: int,
-		play_every_attempt: bool = false) -> PuzzleRunner:
+		play_every_attempt: bool = false,
+		carry_history: bool = false) -> PuzzleRunner:
 	var runner: PuzzleRunner = autofree(PuzzleRunner.new())
 	var config := LlmModeConfig.new()
 	config.instructions_enabled = true
 	config.examples_enabled = false
 	config.reflection_enabled = true
 	runner.start_puzzle(
-		_make_scenario(scenario_id), config, attempt_limit, play_every_attempt
+		_make_scenario(scenario_id), config, attempt_limit, play_every_attempt,
+		carry_history
 	)
 	return runner
 
@@ -300,3 +302,139 @@ func test_an_attempt_record_has_the_same_shape_in_both_modes():
 			"every fixed-attempts record should carry the fields today's record carries")
 	assert_eq(default_summaries[0].keys(), fixed_summaries[0].keys(),
 		"both modes should emit the same summary fields")
+
+
+# --- Attempts are independent trials ---
+#
+# An attempt that can read the earlier attempts' battle replays is not a
+# separate draw from the same distribution, so "wins out of 10" under that
+# regime is one sequence rather than ten trials. These build the real prompt out
+# of the window the logger keeps, which is where such a leak would show up.
+# Whether the controller hands the client that window rather than the wider one
+# is a separate question, and test_game_controller.gd drives it.
+
+const ATTEMPT_ONE_BOARD: String = "ATTEMPT-ONE-BOARD-MARKER"
+const REFLECTION_GAME_INTERVAL: int = 2
+
+
+func _play_a_losing_battle(runner: PuzzleRunner, board_marker: String) -> void:
+	## The order TurnManager._end_game uses, then the result GameController hands
+	## the runner. The marker stands in for the start-of-battle board, which is
+	## the largest thing a replay carries and the easiest to find in a prompt.
+	GameLogger.record_battle_start(board_marker)
+	GameLogger.set_current_game_score_data(_losing_score())
+	GameLogger.finalize_game_replay("Human")
+	runner.record_attempt_result(UnitData.Owner.HUMAN, _losing_score(), 9)
+
+
+func _placement_prompt() -> String:
+	## The message a placement asks the model to answer, built from the same two
+	## things GameController and LlmClient build it from. An empty board and a
+	## fixed shop are enough: what these tests read is what the history put in
+	## it, not what the board did. The shop is fixed rather than randomized so
+	## that two prompts differ only where the history made them differ.
+	var board: GameBoard = autofree(GameBoard.new())
+	board.initialize()
+	var shop_types: Array[UnitData.UnitType] = [
+		UnitData.UnitType.A, UnitData.UnitType.B, UnitData.UnitType.C
+	]
+	var builder := LlmPromptBuilder.new()
+	return builder.build_user_message(
+		board, Shop.create_fixed(shop_types), Shop.create_fixed(shop_types), 1,
+		GameLogger.get_placement_history(), LlmModeConfig.new()
+	)
+
+
+func test_a_later_attempts_prompt_holds_no_earlier_attempts_replay():
+	var runner: PuzzleRunner = _make_runner("4", 3)
+	_play_a_losing_battle(runner, ATTEMPT_ONE_BOARD)
+	assert_eq(runner.current_attempt, 2, "the puzzle should have opened attempt 2")
+	var prompt: String = _placement_prompt()
+	assert_false(prompt.contains(ATTEMPT_ONE_BOARD),
+		"attempt 2 must not be shown the board attempt 1 fought on")
+	assert_false(prompt.contains("Replay"),
+		"attempt 2 must not be shown any replay of an earlier attempt")
+
+
+func test_a_later_attempts_prompt_does_not_count_the_earlier_attempts():
+	## The prompt numbers itself from the history it was handed, so an attempt
+	## that sees no replays must also not be told it is the second game. Being
+	## told so is the same leak in one line instead of a page.
+	var runner: PuzzleRunner = _make_runner("4", 3)
+	_play_a_losing_battle(runner, ATTEMPT_ONE_BOARD)
+	var prompt: String = _placement_prompt()
+	assert_string_contains(prompt, "=== PREP TURN 1 ===")
+	assert_false(prompt.contains("GAME 2"),
+		"attempt 2 must not be told it is a second game")
+
+
+func test_ten_attempts_each_start_from_the_same_empty_prompt():
+	## The property the wins-out-of-N count rests on, taken across the whole run
+	## rather than at one boundary.
+	var runner: PuzzleRunner = _make_runner("4", 10, true)
+	var first_prompt: String = _placement_prompt()
+	for attempt in range(1, 10):
+		_play_a_losing_battle(runner, "ATTEMPT-%d-BOARD" % attempt)
+		assert_eq(runner.current_attempt, attempt + 1)
+		assert_eq(_placement_prompt(), first_prompt,
+			"attempt %d should open on the same prompt attempt 1 opened on" % (attempt + 1))
+
+
+func test_the_carry_history_regime_still_shows_the_earlier_attempts_replay():
+	## The regime the gate L10 wins-out-of-ten were measured under. The paper
+	## cites those numbers, so a run that reproduces them has to stay reachable.
+	var runner: PuzzleRunner = _make_runner("4", 3, false, true)
+	_play_a_losing_battle(runner, ATTEMPT_ONE_BOARD)
+	var prompt: String = _placement_prompt()
+	assert_string_contains(prompt, ATTEMPT_ONE_BOARD)
+	assert_string_contains(prompt, "Game 1 Replay")
+
+
+func test_independent_attempts_leave_the_reflection_channel_what_it_reads():
+	## Reflection is the R in the config labels, and it reads back over attempts
+	## on purpose. Closing the placement window by clearing the replays instead
+	## would blind it, and an R1 against R0 comparison would then measure
+	## nothing. The count is the interval GameController reflects on.
+	var runner: PuzzleRunner = _make_runner("4", 3)
+	GameLogger.log_llm_reasoning("attempt one reasoning")
+	_play_a_losing_battle(runner, ATTEMPT_ONE_BOARD)
+
+	var replays: Array[Dictionary] = GameLogger.get_game_history(REFLECTION_GAME_INTERVAL)
+	assert_eq(replays.size(), 1, "the finished attempt should still be readable")
+	if replays.is_empty():
+		return
+	assert_eq(str(replays[0].get("start_board", "")), ATTEMPT_ONE_BOARD)
+	assert_eq(GameLogger.get_recent_reasoning(REFLECTION_GAME_INTERVAL).size(), 1,
+		"the reasoning of the finished attempt should still be readable")
+
+
+func test_the_log_says_which_attempt_regime_each_attempt_was_played_under():
+	## The results file records the regime too, and the game log is read without
+	## it. An entry that does not say which regime produced it cannot say whether
+	## the attempts around it were independent draws.
+	var mark: int = _mark()
+	_make_runner("4", 3)
+	_make_runner("5", 3, false, true)
+	var boundaries: Array = _entries_since(mark).filter(
+		func(e): return e.get("event", "") == "attempt_start"
+	)
+	assert_eq(boundaries.size(), 2)
+	if boundaries.size() != 2:
+		return
+	assert_eq(boundaries[0].get("carry_attempt_history", ABSENT), false,
+		"an independent-attempts puzzle should say so")
+	assert_eq(boundaries[1].get("carry_attempt_history", ABSENT), true,
+		"a carry-history puzzle should say so")
+
+
+func test_a_further_attempt_carries_the_same_regime():
+	var runner: PuzzleRunner = _make_runner("4", 3, false, true)
+	var mark: int = _mark()
+	runner.record_attempt_result(UnitData.Owner.HUMAN, _losing_score(), 9)
+	var boundaries: Array = _entries_since(mark).filter(
+		func(e): return e.get("event", "") == "attempt_start"
+	)
+	assert_eq(boundaries.size(), 1)
+	if boundaries.is_empty():
+		return
+	assert_eq(boundaries[0].get("carry_attempt_history", ABSENT), true)
